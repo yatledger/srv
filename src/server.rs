@@ -165,7 +165,7 @@ pub async fn start_server() -> Result<(), Box<dyn std::error::Error>> {
     let graph = Arc::new(RwLock::new(Graph::new()));
     let graph_clone = Arc::clone(&graph);
     tokio::spawn(async move {
-        let mut interval = time::interval(Duration::from_millis(100));
+        let mut interval = time::interval(Duration::from_millis(250));
         loop {
             interval.tick().await;
             let mut graph = graph_clone.write().unwrap();

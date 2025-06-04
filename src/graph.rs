@@ -238,7 +238,7 @@ impl Graph {
             edges.retain(|e| e != &node_hash); // Удаляем `node_hash` из списков детей других узлов.
         }
     }
-
+    /*
     /// Выполняет топологическую сортировку графа, возвращая узлы в порядке от листьев к корням.
     /// Топологическая сортировка упорядочивает узлы так, чтобы для каждого ребра (u -> v) узел u
     /// находился в списке раньше узла v. Это необходимо для алгоритмов, зависящих от порядка обработки,
@@ -310,49 +310,64 @@ impl Graph {
         // Это гарантирует, что узел появится в списке после всех своих потомков.
         order.push(node.clone());
     }
+    */
 
-    /// Пересчитывает веса всех узлов графа на основе потомков с затуханием.
-    /// Для каждого узла вес равен сумме 1/(2^depth) для всех путей к потомкам на глубине 1..5.
-    /// Например, для глубины 1: 1/2^1 = 0.5, для глубины 2: 1/2^2 = 0.25, и т.д.
-    pub fn compute_weights(&mut self) {
-        
-        // Получаем топологический порядок узлов (от листьев к корням).
-        let topo_order = self.topological_sort();
-        
-        // Инициализируем веса нулями для всех узлов.
-        self.weights.clear();
-        for node in self.adj_list.keys() {
-            self.weights.insert(node.clone(), 0.0);
+    /// Рекурсивно вычисляет косвенный вес узла, суммируя X для каждого потомка.
+    /// Использует DFS для обхода всех потомков узла до глубины N.
+    /// 
+    /// # Аргументы
+    /// * `node` - Хэш текущего узла.
+    /// * `depth` - Текущая глубина относительно начального узла.
+    /// * `visited` - Множество посещённых узлов для предотвращения повторного обхода.
+    /// 
+    /// # Возвращает
+    /// Сумму для всех потомков на глубинах.
+    fn calculate_indirect_weight(&self, node: &String, depth: u32, visited: &mut HashSet<String>) -> f64 {
+        // Если узел уже посещён, возвращаем 0, чтобы избежать циклов (хотя граф ацикличен, для безопасности).
+        if visited.contains(node) {
+            return 0.0;
         }
-        
-        // Для каждой глубины от 1 до 5 вычисляем вклады в веса.
-        for depth in 1..=5 {
-            let damping = 1.0 / f64::powi(2.0, depth as i32); // Damping factor = 1 / (2^depth).
-            // Создаём временную карту для хранения числа потомков на текущей глубине.
-            let mut descendants_count: HashMap<String, f64> = self.adj_list.keys().map(|k| (k.clone(), 0.0)).collect();
-            
-            // Проходим по узлам в топологическом порядке.
-            for node in &topo_order {
-                // Для каждого узла суммируем вклады его детей.
-                if let Some(children) = self.adj_list.get(node) {
-                    for child in children {
-                        // Добавляем 1 к числу потомков узла на глубине depth.
-                        // Если depth == 1, учитываем самого ребёнка, иначе — его потомков с предыдущей итерации.
-                        let count = if depth == 1 { 1.0 } else { descendants_count[child] };
-                        *descendants_count.entry(node.clone()).or_insert(0.0) += count;
-                    }
-                }
-                // Обновляем вес узла, добавляя damping_factor * число_потомков_на_глубине.
-                let weight = self.weights.get_mut(node).unwrap();
-                *weight += damping * descendants_count[node];
+        // Если глубина больше 5, прекращаем обход.
+        if depth > 5 {
+            return 0.0;
+        }
+        visited.insert(node.clone());
+        let mut weight = 0.0;
+        // Если depth > 0, добавляем вклад текущего узла (1 / 2^depth).
+        // let damping = exp_decay(depth as f64, 1.0, 0.01);
+        // powi(2.0, depth as i32)
+        if depth > 0 {
+            weight += exp_decay(depth as f64, 1.0, 0.01);
+        }
+        // Обходим всех детей узла.
+        if let Some(children) = self.adj_list.get(node) {
+            for child in children {
+                weight += self.calculate_indirect_weight(child, depth + 1, visited);
             }
         }
+        // Удаляем узел из посещённых, чтобы он мог быть учтён для других начальных узлов.
+        visited.remove(node);
+        weight
+    }
+
+    /// Пересчитывает веса всех узлов графа на основе потомков с затуханием.
+    pub fn compute_weights(&mut self) {
+        
+        // Вычисляем веса для каждого узла.
+        let mut visited = HashSet::new();
+        self.weights.clear();
+        for node in self.adj_list.keys() {
+            let weight = self.calculate_indirect_weight(node, 0, &mut visited);
+            self.weights.insert(node.clone(), weight);
+        }
+
         // Вычисляем динамический порог
         let n = self.adj_list.len() as f64;    
         let threshold = exp_decay(n, 10.0, 0.001);
 
         // Собираем узлы, у которых вес >= threshold
-        let to_remove: Vec<String> = self.weights.iter()
+        let to_remove: Vec<String> = self.weights
+            .iter()
             .filter(|&(_, &weight)| weight >= threshold)
             .map(|(node, _)| node.clone())
             .collect();
@@ -363,13 +378,37 @@ impl Graph {
         }
         // Выводим статистику за такт
         println!(
-            "Cycle stats: {} added, {} removed, {} total, порог: {:.2}",
+            "Cycle stats: {} added, {} removed, {} total, threshold: {:.2}",
             self.nodes_added, self.nodes_removed, self.adj_list.len(), threshold
         );
         // Сбрасываем счётчики
         self.nodes_added = 0;
         self.nodes_removed = 0;
     }
+    /*
+    // Для каждой глубины от 1 до 5 вычисляем вклады в веса.
+    for depth in 1..=5 {
+        let damping = 1.0 / f64::powi(2.0, depth as i32); // Damping factor = 1 / (2^depth).
+        // Создаём временную карту для хранения числа потомков на текущей глубине.
+        let mut descendants_count: HashMap<String, f64> = self.adj_list.keys().map(|k| (k.clone(), 0.0)).collect();
+        
+        // Проходим по узлам в топологическом порядке.
+        for node in &topo_order {
+            // Для каждого узла суммируем вклады его детей.
+            if let Some(children) = self.adj_list.get(node) {
+                for child in children {
+                    // Добавляем 1 к числу потомков узла на глубине depth.
+                    // Если depth == 1, учитываем самого ребёнка, иначе — его потомков с предыдущей итерации.
+                    let count = if depth == 1 { 1.0 } else { descendants_count[child] };
+                    *descendants_count.entry(node.clone()).or_insert(0.0) += count;
+                }
+            }
+            // Обновляем вес узла, добавляя damping_factor * число_потомков_на_глубине.
+            let weight = self.weights.get_mut(node).unwrap();
+            *weight += damping * descendants_count[node];
+        }
+    }
+    */
     /*
     /// Проверяет наличие цикла в графе с использованием алгоритма поиска в глубину (DFS).
     /// Этот метод обходит весь граф, начиная с каждого непосещенного узла, и возвращает true,
