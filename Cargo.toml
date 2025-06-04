@@ -1,0 +1,10 @@
+[package]
+name = "dag_db"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+axum = "0.7" # Фреймворк для создания HTTP-сервера.
+serde = { version = "1.0", features = ["derive"] } # Для сериализации/десериализации JSON.
+serde_json = "1.0" # Для работы с JSON в graph.rs.
+tokio = { version = "1.0", features = ["full"] } # Асинхронный runtime.
