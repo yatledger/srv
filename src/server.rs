@@ -9,6 +9,7 @@ use serde::{Deserialize, Serialize}; // Для сериализации/десе
 use std::collections::HashMap; // Для возврата графа в JSON.
 use std::sync::{Arc, RwLock}; // Для безопасного разделения графа между потоками.
 use tokio::net::TcpListener; // Для запуска асинхронного TCP-сервера.
+use tokio::time::{self, Duration}; // Асинхронное время
 
 // Импортируем структуру Graph из вашего модуля graph.rs.
 use crate::graph::Graph;
@@ -118,7 +119,7 @@ async fn add_node_handler(
 ) -> (StatusCode, Json<AddNodeResponse>) {
     // Получаем блокировку графа для безопасного доступа.
     // RwLock обеспечивает синхронизацию между потоками.
-    let start = std::time::Instant::now();
+    // let start = std::time::Instant::now();
     let mut graph = match graph.write() {
         Ok(guard) => guard,
         Err(_) => {
@@ -132,9 +133,8 @@ async fn add_node_handler(
             );
         }
     };
-    let duration = start.elapsed(); // Вычисляем время выполнения.
-    let node_count = graph.get_adj_list().len(); // Получаем количество узлов в графе.
-    println!("add_node_handler took {} ms, total nodes: {}", duration.as_millis(), node_count);
+    // let duration = start.elapsed(); // Вычисляем время выполнения.
+    // println!("add_node_handler took {} ms", duration.as_millis());
 
     // Вызываем метод add_node_with_parents на графе.
     match graph.add_node_with_parents(payload.node_hash, payload.parents) {
@@ -163,6 +163,15 @@ pub async fn start_server() -> Result<(), Box<dyn std::error::Error>> {
     // Arc (Atomic Reference Counting) позволяет безопасно делить данные между потоками.
     // RwLock обеспечивает взаимоисключающий доступ к графу.
     let graph = Arc::new(RwLock::new(Graph::new()));
+    let graph_clone = Arc::clone(&graph);
+    tokio::spawn(async move {
+        let mut interval = time::interval(Duration::from_millis(100));
+        loop {
+            interval.tick().await;
+            let mut graph = graph_clone.write().unwrap();
+            graph.compute_weights();
+        }
+    });
 
     // Создаём маршруты для Axum-сервера.
     // Определяем один POST-эндпоинт /add_node, который вызывает add_node_handler.
