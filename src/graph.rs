@@ -1,81 +1,45 @@
 // Импортируем необходимые коллекции из стандартной библиотеки Rust для работы с графом.
 // HashMap используется для хранения списка смежности, а HashSet — для проверки циклов в DFS.
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::fs; // Для чтения файла.
 use serde::Deserialize; // Для десериализации JSON.
 
+#[derive(Debug, Clone)]
+pub struct NodeInfo {
+    pub node: String,
+    pub depth: usize,
+    pub weight: f64,
+}
+
+#[derive(Debug, Clone)]
+pub struct Node {
+    pub node: String,
+    pub weight: f64,
+}
 // Структура для десериализации JSON с генезис-транзакциями.
 #[derive(Deserialize)]
 struct GenesisTransaction {
-    node_hash: String, // Хэш генезис-узла.
+    hash: String, // Хэш генезис-узла.
 }
 
-// Определяем публичную структуру Graph, которая представляет собой направленный граф.
-// Граф хранится в виде списка смежности (adjacency list), где:
-// - Ключ (String) — это хэш узла (уникальный идентификатор узла).
-// - Значение (Vec<String>) — это вектор хэшей дочерних узлов, к которым ведет ребро из данного узла.
-// Использование String как хэша позволяет гибко идентифицировать узлы, например, через их имена или UUID.
-pub struct Graph {
-    adj_list: HashMap<String, Vec<String>>,
-    weights: HashMap<String, f64>,
-    nodes_added: usize, // Счётчик добавленных узлов за такт
-    nodes_removed: usize, // Счётчик удалённых узлов за такт
+pub struct DAG {
+    // Граф: узел -> список детей
+    childrens: HashMap<String, Vec<String>>,
+    // Обратный граф: узел -> список родителей  
+    parents: HashMap<String, Vec<String>>,
+    // Все узлы
+    nodes: HashSet<String>,
 }
 
-/// Вычисляет коэффициент k, обратно пропорциональный логарифму N.
-/// 
-/// # Аргументы
-/// * `n` - Входное значение (N >= 1, чтобы избежать log(0) или log(отрицательного)).
-/// * `c` - Масштабирующая константа (C > 0).
-/// * `base` - Основание логарифма (по умолчанию e, можно передать 10.0 или 2.0).
-/// 
-/// # Примеры
-/// ```
-/// let k = log_scaling(100.0, 1.0, 10.0); // k = 1.0 / log10(100) = 0.5
-/// ```
-/*pub fn log_scaling(n: f64, c: f64, base: f64) -> f64 {
-    assert!(n >= 1.0, "N должно быть >= 1, чтобы логарифм был определён.");
-    assert!(c > 0.0 && base > 0.0, "C и основание логарифма должны быть положительными.");
-    
-    c / n.log(base)
-}*/
 
-/// Вычисляет коэффициент экспоненциального затухания k = C * exp(-λ * N).
-/// 
-/// # Аргументы
-/// * `n` - Входное значение (N >= 0).
-/// * `c` - Начальное значение при N=0 (C > 0).
-/// * `lambda` - Коэффициент затухания (λ > 0).
-/// 
-/// # Пример
-/// ```
-/// let k = exp_decay(2.0, 1.0, 0.5); // k = 1.0 * exp(-0.5 * 2) ≈ 0.367
-/// ```
-pub fn exp_decay(n: f64, c: f64, lambda: f64) -> f64 {
-    assert!(n >= 0.0 && c > 0.0 && lambda > 0.0, "Некорректные параметры.");
-    c * (-lambda * n).exp()
-}
-
-// Реализация методов для структуры Graph через блок impl.
-impl Graph {
-    /// Создает новый экземпляр пустого графа.
-    /// Этот метод является конструктором структуры Graph и инициализирует её с пустым списком смежности.
-    /// 
-    /// # Возвращает
-    /// Новый экземпляр Graph, где adj_list — это пустой HashMap.
-    /// Использование Self в возвращаемом типе делает код более читаемым и поддерживаемым.
-    /// Создает новый экземпляр графа, загружая генезис-транзакции из JSON-файла.
-    /// Читает файл genesis.json, десериализует его в вектор GenesisTransaction,
-    /// добавляет узлы в граф с помощью приватного метода add_node.
-    /// Если файл не найден или JSON некорректен, выводится ошибка, но создаётся пустой граф.
+impl DAG {
     pub fn new() -> Self {
-        let mut graph = Graph {
-            adj_list: HashMap::new(),
-            weights: HashMap::new(),
-            nodes_added: 0,
-            nodes_removed: 0,
+        let mut graph = DAG {
+            childrens: HashMap::new(),
+            parents: HashMap::new(),
+            nodes: HashSet::new(),
         };
-        let genesis_data = fs::read_to_string("genesis.json").map_err(|e| {
+        /* let genesis_data = fs::read_to_string("genesis.json").map_err(|e| {
             eprintln!("Failed to read genesis.json: {}", e);
             e
         });
@@ -84,7 +48,7 @@ impl Graph {
                 Ok(transactions) => {
                     // Итерируемся по ссылке на transactions, чтобы не перемещать вектор.
                     for tx in &transactions {
-                        graph.add_node(tx.node_hash.clone()); // Клонируем node_hash, так как он String.
+                        graph.add_node(tx.hash.clone());
                     }
                     println!("Loaded {} genesis transactions from genesis.json", transactions.len());
                 }
@@ -92,18 +56,78 @@ impl Graph {
                     eprintln!("Failed to parse genesis.json: {}", e);
                 }
             }
-        }
+        } */
+        // Добавляем тестовые данные
+        // Корневые узлы A и B
+        graph.add_node("A".to_string());
+        graph.add_node("B".to_string());
+        // Узлы C, D с родителем A
+        let _ = graph.add_node_with_parents("C".to_string(), vec!["A".to_string()]);
+        let _ = graph.add_node_with_parents("D".to_string(), vec!["A".to_string()]);
+
+        // Узлы E, F с родителем B
+        let _ = graph.add_node_with_parents("E".to_string(), vec!["B".to_string()]);
+        let _ = graph.add_node_with_parents("F".to_string(), vec!["A".to_string(), "B".to_string()]);
+
+        // Узел G с родителями C, D
+        let _ = graph.add_node_with_parents("G".to_string(), vec!["C".to_string(), "D".to_string()]);
+
+        // Узел H с родителем D
+        let _ = graph.add_node_with_parents("H".to_string(), vec!["D".to_string()]);
+
+        // Узлы I, J с родителем E
+        let _ = graph.add_node_with_parents("I".to_string(), vec!["E".to_string()]);
+        let _ = graph.add_node_with_parents("J".to_string(), vec!["E".to_string()]);
+
+        // Узел K с родителем F
+        let _ = graph.add_node_with_parents("K".to_string(), vec!["F".to_string()]);
+
+        // Узел L с родителями G, H
+        let _ = graph.add_node_with_parents("L".to_string(), vec!["G".to_string(), "H".to_string()]);
+
+        // Узел M с родителем H
+        let _ = graph.add_node_with_parents("M".to_string(), vec!["H".to_string()]);
+
+        // Узлы N, O с родителем I
+        let _ = graph.add_node_with_parents("N".to_string(), vec!["I".to_string()]);
+        let _ = graph.add_node_with_parents("O".to_string(), vec!["I".to_string()]);
+
+        // Узел P с родителями J, K
+        let _ = graph.add_node_with_parents("P".to_string(), vec!["J".to_string(), "K".to_string()]);
+
+        // Узел Q с родителем L
+        let _ = graph.add_node_with_parents("Q".to_string(), vec!["L".to_string()]);
+
+        // Узлы R, S с родителем M
+        let _ = graph.add_node_with_parents("R".to_string(), vec!["M".to_string()]);
+        let _ = graph.add_node_with_parents("S".to_string(), vec!["M".to_string()]);
+
+        // Узел T с родителем N
+        let _ = graph.add_node_with_parents("T".to_string(), vec!["N".to_string()]);
+
+        // Узел U с родителем P
+        let _ = graph.add_node_with_parents("U".to_string(), vec!["P".to_string()]);
+
+        // Узел V с родителем Q
+        let _ = graph.add_node_with_parents("V".to_string(), vec!["Q".to_string()]);
+
+        // Узел W с родителем T
+        let _ = graph.add_node_with_parents("W".to_string(), vec!["T".to_string()]);
+
+        // Узел X с родителями U, V
+        let _ = graph.add_node_with_parents("X".to_string(), vec!["U".to_string(), "V".to_string()]);
+
+        // Узел Y с родителем W
+        let _ = graph.add_node_with_parents("Y".to_string(), vec!["W".to_string()]);
+
+        // Узел Z с родителем X
+        let _ = graph.add_node_with_parents("Z".to_string(), vec!["X".to_string()]);
         graph
     }
 
     /// Возвращает неизменяемую ссылку на список смежности графа.
-    /// Этот метод предоставляет доступ "только для чтения" к внутренней структуре данных графа,
-    /// что полезно для проверки состояния графа или его анализа без риска случайного изменения.
-    /// 
-    /// # Возвращает
-    /// Ссылку (&HashMap<String, Vec<String>>) на adj_list, которая содержит все узлы и их дочерние связи.
     pub fn get_adj_list(&self) -> &HashMap<String, Vec<String>> {
-        &self.adj_list // Просто возвращаем ссылку на поле adj_list структуры.
+        &self.childrens // Просто возвращаем ссылку на поле adj_list структуры.
     }
 
     /// Добавляет новый узел в граф с указанными родителями и создает ребра от родителей к этому узлу.
@@ -129,10 +153,10 @@ impl Graph {
     ///   - Узел с таким хэшем уже существует ("Node already exists").
     ///   - Нет ни одного существующего родителя ("No existing parents").
     ///   - Добавление ребра создает цикл ("Cycle detected").
-    pub fn add_node_with_parents(&mut self, node_hash: String, parents: Vec<String>) -> Result<(), String> {
+    pub fn add_node_with_parents(&mut self, node: String, parents: Vec<String>) -> Result<(), String> {
         // Проверяем, существует ли уже узел с таким хэшем в графе.
         // Это важно для предотвращения дублирования узлов и сохранения уникальности идентификаторов.
-        if self.adj_list.contains_key(&node_hash) {
+        if self.childrens.contains_key(&node) {
             return Err("Node already exists".to_string()); // Возвращаем ошибку, если узел уже есть.
         }
 
@@ -140,24 +164,25 @@ impl Graph {
         // Используем into_iter() для владения значениями из вектора parents и collect для создания нового вектора.
         let existing_parents = parents
             .into_iter()
-            .filter(|p| self.adj_list.contains_key(p)) // Проверяем наличие каждого родителя в adj_list.
+            .filter(|p| self.childrens.contains_key(p)) // Проверяем наличие каждого родителя в adj_list.
             .collect::<Vec<_>>();
 
         // Если после фильтрации не осталось ни одного существующего родителя,
         // добавление узла невозможно, так как он должен быть связан хотя бы с одним узлом.
+        // TODO: 2 parents!
         if existing_parents.is_empty() {
             return Err("No existing parents".to_string()); // Ошибка: нет родителей для связи.
         }
 
         // Добавляем новый узел в граф с пустым списком дочерних узлов.
         // Используем clone(), так как node_hash будет использоваться дальше.
-        self.adj_list.insert(node_hash.clone(), Vec::new());
-        self.weights.insert(node_hash.clone(), 0.0);
-        self.nodes_added += 1; // Увеличиваем счётчик добавленных узлов
+        self.nodes.insert(node.clone());
+        self.childrens.insert(node.clone(), Vec::new());
+        self.parents.insert(node.clone(), Vec::new());
 
         // Проходим по каждому существующему родителю и добавляем ребро от него к новому узлу.
         for parent in &existing_parents {
-            self.add_edge(parent.clone(), node_hash.clone()); // Создаем ребро от родителя к новому узлу.
+            self.add_edge(parent.clone(), node.clone());
 
             // После добавления ребра проверяем, не образовался ли цикл в графе.
             /*if self.has_cycle() {
@@ -173,12 +198,7 @@ impl Graph {
     }
 
     /// Добавляет новый узел в граф без указания родителей.
-    /// Этот метод проще, чем add_node_with_parents, так как он не создает ребра,
-    /// а просто добавляет изолированный узел, если его ещё нет в графе.
-    /// 
-    /// # Аргументы
-    /// * `node_hash` — Хэш узла (String), который нужно добавить.
-    fn add_node(&mut self, node_hash: String) {
+    fn add_node(&mut self, node: String) {
         // Используем метод entry для доступа к записи в HashMap.
         // or_insert_with добавляет пустой вектор, если узла ещё нет, и ничего не делает, если узел уже существует.
         // [ ] Doooo
@@ -187,423 +207,250 @@ impl Graph {
         // BUG: bug
         // XXX: xxx
         // FIXME: fix
-        self.adj_list.entry(node_hash.clone()).or_insert_with(Vec::new); // TODO: разобраться как правильней зосдавать новый узел
-        self.weights.insert(node_hash, 0.0);
+        self.nodes.insert(node.clone());
+        self.childrens.entry(node.clone()).or_insert_with(Vec::new); // TODO: разобраться как правильней зосдавать новый узел
+        self.parents.entry(node.clone()).or_insert_with(Vec::new);
     }
 
     /// Добавляет направленное ребро от узла `from` к узлу `to`.
-    /// Если узел `from` ещё не существует, он будет автоматически создан.
-    /// Узел `to` не создается автоматически, так как предполагается, что он уже есть или будет добавлен позже.
-    /// 
-    /// # Аргументы
-    /// * `from` — Хэш узла (String), из которого исходит ребро.
-    /// * `to` — Хэш узла (String), в который ведет ребро.
     fn add_edge(&mut self, from: String, to: String) {
         // Используем entry для доступа к записи узла `from` в HashMap.
         // and_modify изменяет существующий вектор дочерних узлов, добавляя `to`.
         // or_insert_with создает новый вектор с `to`, если узла `from` ещё нет.
-        self.adj_list
-            .entry(from)
-            .and_modify(|edges| edges.push(to.clone())) // Добавляем `to` в список детей.
-            .or_insert_with(|| vec![to]); // Создаем новый список с `to`, если узла не было.
+        self.childrens.entry(from.clone()).and_modify(|edges| edges.push(to.clone())).or_insert_with(|| vec![to.clone()]);
+        self.parents.entry(to.clone()).and_modify(|edges| edges.push(from.clone())).or_insert_with(|| vec![from]);
     }
 
     /// Удаляет ребро от узла `from` к узлу `to`.
-    /// Этот метод приватный и используется внутри структуры, например, для отката изменений при обнаружении цикла.
-    /// 
-    /// # Аргументы
-    /// * `from` — Хэш узла (String), из которого удаляется ребро.
-    /// * `to` — Хэш узла (String), в который ведет ребро, которое нужно удалить.
     /*fn remove_edge(&mut self, from: String, to: String) {
-        // Получаем изменяемую ссылку на вектор дочерних узлов узла `from`.
         if let Some(edges) = self.adj_list.get_mut(&from) {
-            // Удаляем все элементы из вектора edges, которые равны `to`.
             edges.retain(|e| e != &to);
         }
-        // Если узла `from` нет, ничего не делаем (безопасная обработка).
+        if let Some(edges) = self.reverse_adj_list.get_mut(&to) {
+            edges.retain(|e| e != &from);
+        }
     }*/
 
     /// Удаляет узел из графа и все ребра, которые ведут к нему.
-    /// Этот метод приватный и используется для отката изменений, например, при обнаружении цикла.
-    /// 
-    /// # Аргументы
-    /// * `node_hash` — Хэш узла (String), который нужно удалить.
-    fn remove_node(&mut self, node_hash: String) {
-        // Удаляем узел из списка смежности.
-        self.adj_list.remove(&node_hash);
-        self.weights.remove(&node_hash);
-
-        // Проходим по всем узлам графа и удаляем все ребра, которые указывают на удаляемый узел.
-        for edges in self.adj_list.values_mut() {
-            edges.retain(|e| e != &node_hash); // Удаляем `node_hash` из списков детей других узлов.
-        }
-    }
-    /*
-    /// Выполняет топологическую сортировку графа, возвращая узлы в порядке от листьев к корням.
-    /// Топологическая сортировка упорядочивает узлы так, чтобы для каждого ребра (u -> v) узел u
-    /// находился в списке раньше узла v. Это необходимо для алгоритмов, зависящих от порядка обработки,
-    /// например, для вычисления весов узлов на основе их потомков.
-    /// 
-    /// # Алгоритм
-    /// 1. Создаётся пустое множество `visited` для отслеживания посещённых узлов.
-    /// 2. Создаётся пустой вектор `order` для хранения порядка узлов.
-    /// 3. Для каждого узла графа, который ещё не посещён, вызывается `dfs_topo` для рекурсивного обхода.
-    /// 4. После обхода всех узлов возвращается вектор `order`, содержащий узлы в топологическом порядке.
-    /// 
-    /// # Возвращает
-    /// Вектор `Vec<String>`, содержащий хэши узлов в топологическом порядке (от листьев к корням).
-    /// 
-    /// # Примечания
-    /// - Метод предполагает, что граф ацикличен (DAG). Если граф содержит цикл, результат может быть некорректным,
-    ///   но в текущей реализации циклы предотвращаются проверкой в `add_node_with_parents`.
-    /// - Используется HashSet для `visited`, чтобы избежать повторного посещения узлов, что важно для графов
-    ///   с несколькими путями к одному узлу.
-    fn topological_sort(&self) -> Vec<String> {
-        // Создаём множество для отслеживания посещённых узлов, чтобы не обрабатывать их повторно.
-        let mut visited = HashSet::new();
-        // Создаём вектор для хранения порядка узлов в топологической сортировке.
-        let mut order = Vec::new();
-        // Проходим по всем узлам графа, чтобы учесть все компоненты связности.
-        for node in self.adj_list.keys() {
-            // Если узел ещё не посещён, запускаем для него DFS-обход.
-            if !visited.contains(node) {
-                self.dfs_topo(node, &mut visited, &mut order);
-            }
-        }
-        // Возвращаем вектор с узлами в топологическом порядке.
-        order
-    }
-
-    /// Вспомогательный метод для топологической сортировки, использующий поиск в глубину (DFS).
-    /// Рекурсивно обходит граф, начиная с указанного узла, и добавляет узлы в порядок после посещения
-    /// всех их потомков. Это обеспечивает, что дочерние узлы (листья) появляются в порядке раньше родителей.
-    /// 
-    /// # Аргументы
-    /// * `node` — Хэш текущего узла (ссылка на String), с которого начинается обход.
-    /// * `visited` — Множество посещённых узлов (HashSet), обновляется во время обхода.
-    /// * `order` — Вектор, в который добавляются узлы в топологическом порядке.
-    /// 
-    /// # Логика работы
-    /// 1. Помечаем текущий узел как посещённый, добавляя его в `visited`.
-    /// 2. Если у узла есть дочерние узлы, рекурсивно обходим каждого непосещённого ребёнка.
-    /// 3. После обработки всех детей добавляем текущий узел в `order`.
-    /// 
-    /// # Примечания
-    /// - Узел добавляется в `order` только после обработки всех его потомков, что гарантирует
-    ///   корректный топологический порядок (листья раньше родителей).
-    /// - Используется клонирование `node`, так как `order` должен владеть значением, а `node` — это ссылка.
-    /// - Метод безопасно обрабатывает случай, когда у узла нет детей (листовой узел).
-    fn dfs_topo(&self, node: &String, visited: &mut HashSet<String>, order: &mut Vec<String>) {
-        // Помечаем текущий узел как посещённый, чтобы избежать повторного обхода.
-        visited.insert(node.clone());
-        // Получаем список дочерних узлов текущего узла, если он есть в графе.
-        if let Some(children) = self.adj_list.get(node) {
-            // Обходим каждого ребёнка, если он ещё не посещён.
-            for child in children {
-                if !visited.contains(child) {
-                    // Рекурсивно вызываем DFS для непосещённого ребёнка.
-                    self.dfs_topo(child, visited, order);
+    fn remove_node(&mut self, node: String) {
+        if let Some(children) = self.childrens.remove(&node) {
+            for child in &children {
+                if let Some(parents) = self.parents.get_mut(child) {
+                    parents.retain(|p| p != &node);
                 }
             }
         }
-        // После обработки всех детей добавляем текущий узел в порядок.
-        // Это гарантирует, что узел появится в списке после всех своих потомков.
-        order.push(node.clone());
-    }
-    */
-
-    /// Рекурсивно вычисляет косвенный вес узла, суммируя X для каждого потомка.
-    /// Использует DFS для обхода всех потомков узла до глубины N.
-    /// 
-    /// # Аргументы
-    /// * `node` - Хэш текущего узла.
-    /// * `depth` - Текущая глубина относительно начального узла.
-    /// * `visited` - Множество посещённых узлов для предотвращения повторного обхода.
-    /// 
-    /// # Возвращает
-    /// Сумму для всех потомков на глубинах.
-    fn calculate_indirect_weight(&self, node: &String, depth: u32, visited: &mut HashSet<String>) -> f64 {
-        // Если узел уже посещён, возвращаем 0, чтобы избежать циклов (хотя граф ацикличен, для безопасности).
-        if visited.contains(node) {
-            return 0.0;
-        }
-        // Если глубина больше 5, прекращаем обход.
-        if depth > 5 {
-            return 0.0;
-        }
-        visited.insert(node.clone());
-        let mut weight = 0.0;
-        // Если depth > 0, добавляем вклад текущего узла (1 / 2^depth).
-        // let damping = exp_decay(depth as f64, 1.0, 0.01);
-        // powi(2.0, depth as i32)
-        if depth > 0 {
-            weight += exp_decay(depth as f64, 1.0, 0.01);
-        }
-        // Обходим всех детей узла.
-        if let Some(children) = self.adj_list.get(node) {
-            for child in children {
-                weight += self.calculate_indirect_weight(child, depth + 1, visited);
+        if let Some(parents) = self.parents.remove(&node) {
+            for parent in &parents {
+                if let Some(children) = self.childrens.get_mut(parent) {
+                    children.retain(|c| c != &node);
+                }
             }
         }
-        // Удаляем узел из посещённых, чтобы он мог быть учтён для других начальных узлов.
-        visited.remove(node);
-        weight
+        self.nodes.remove(&node);
     }
 
-    /// Пересчитывает веса всех узлов графа на основе потомков с затуханием.
-    pub fn compute_weights(&mut self) {
+    /// Основной алгоритм: вычисляет всех потомков для каждого узла с их глубиной и весом
+    /// Использует простую формулу: вес = 1/глубина
+    pub fn compute_descendants_with_depth_and_weight(&self) -> HashMap<String, Vec<NodeInfo>> {
+        let mut result: HashMap<String, Vec<NodeInfo>> = HashMap::new();
         
-        // Вычисляем веса для каждого узла.
-        let mut visited = HashSet::new();
-        self.weights.clear();
-        for node in self.adj_list.keys() {
-            let weight = self.calculate_indirect_weight(node, 0, &mut visited);
-            self.weights.insert(node.clone(), weight);
+        for node in &self.nodes {
+            let descendants = self.find_descendants_with_depth_and_weight(node);
+            result.insert(node.clone(), descendants);
         }
+        
+        result
+    }
 
-        // Вычисляем динамический порог
-        let n = self.adj_list.len() as f64;    
-        let threshold = exp_decay(n, 10.0, 0.001);
+    /// Вычисляет итоговый вес каждого узла на основе суммы весов всех его потомков
+    pub fn compute_node_weights(&self) -> HashMap<String, f64> {
+        let descendants_map = self.compute_descendants_with_depth_and_weight();
+        let mut node_weights: HashMap<String, f64> = HashMap::new();
+        
+        for (node, descendants) in descendants_map {
+            let total_weight: f64 = descendants.iter().map(|d| d.weight).sum();
+            node_weights.insert(node, total_weight);
+        }
+        
+        node_weights
+    }
 
-        // Собираем узлы, у которых вес >= threshold
-        let to_remove: Vec<String> = self.weights
-            .iter()
-            .filter(|&(_, &weight)| weight >= threshold)
-            .map(|(node, _)| node.clone())
+    /// Вычисляет финальный вес каждого узла с учётом рекурсивного суммирования
+    /// весов всех потомков (включая веса потомков потомков)
+    pub fn compute_final_node_weights(&self) -> HashMap<String, f64> {
+        let basic_weights = self.compute_node_weights();
+        let mut final_weights: HashMap<String, f64> = HashMap::new();
+        
+        // Получаем узлы, отсортированные по уровням (снизу вверх для корректного расчёта)
+        let levels = self.get_nodes_by_levels();
+        let mut sorted_levels: Vec<_> = levels.keys().collect();
+        sorted_levels.sort_by(|a, b| b.cmp(a)); // От глубоких к корневым
+        
+        // Инициализируем финальные веса базовыми весами
+        for (node, weight) in &basic_weights {
+            final_weights.insert(node.clone(), *weight);
+        }
+        
+        // Проходим по уровням снизу вверх и добавляем веса потомков
+        for &level in &sorted_levels {
+            if let Some(nodes_at_level) = levels.get(&level) {
+                for node in nodes_at_level {
+                    if let Some(children) = self.childrens.get(node) {
+                        let mut additional_weight = 0.0;
+                        
+                        // Добавляем финальные веса всех прямых потомков
+                        for child in children {
+                            if let Some(child_final_weight) = final_weights.get(child) {
+                                additional_weight += child_final_weight;
+                            }
+                        }
+                        
+                        // Обновляем финальный вес узла
+                        if let Some(current_weight) = final_weights.get_mut(node) {
+                            *current_weight += additional_weight;
+                        }
+                    }
+                }
+            }
+        }
+        
+        final_weights
+    }
+
+    /// Получить финальные веса в виде отсортированного вектора узлов
+    pub fn get_all_weights(&self) -> Vec<Node> {
+        let final_weights = self.compute_final_node_weights();
+        let mut result: Vec<Node> = final_weights
+            .into_iter()
+            .map(|(node, weight)| Node { node, weight })
             .collect();
-        // Удаляем каждый такой узел с помощью метода remove_node
-        for node in to_remove {
-            self.remove_node(node); // Удаляет узел, его вес и все входящие рёбра
-            self.nodes_removed += 1;
-        }
-        // Выводим статистику за такт
-        println!(
-            "Cycle stats: {} added, {} removed, {} total, threshold: {:.2}",
-            self.nodes_added, self.nodes_removed, self.adj_list.len(), threshold
-        );
-        // Сбрасываем счётчики
-        self.nodes_added = 0;
-        self.nodes_removed = 0;
-    }
-    /*
-    // Для каждой глубины от 1 до 5 вычисляем вклады в веса.
-    for depth in 1..=5 {
-        let damping = 1.0 / f64::powi(2.0, depth as i32); // Damping factor = 1 / (2^depth).
-        // Создаём временную карту для хранения числа потомков на текущей глубине.
-        let mut descendants_count: HashMap<String, f64> = self.adj_list.keys().map(|k| (k.clone(), 0.0)).collect();
         
-        // Проходим по узлам в топологическом порядке.
-        for node in &topo_order {
-            // Для каждого узла суммируем вклады его детей.
-            if let Some(children) = self.adj_list.get(node) {
+        // Сортируем по весу (по убыванию) и алфавиту
+        // result.sort_by(|a, b| b.weight.partial_cmp(&a.weight).unwrap_or(std::cmp::Ordering::Equal));
+        result.sort_by(|a, b| {
+            b.weight.partial_cmp(&a.weight)
+                .unwrap_or(std::cmp::Ordering::Equal)
+                .then_with(|| a.node.cmp(&b.node))
+        });
+        result
+    }
+
+    /// Вычисляет вес узла по простой формуле: 1/depth
+    fn calculate_weight(depth: usize) -> f64 {
+        1.0 / depth as f64
+    }
+
+    /// Находит всех потомков узла с их глубиной и весом относительно этого узла
+    fn find_descendants_with_depth_and_weight(&self, start_node: &str) -> Vec<NodeInfo> {
+        let mut descendants: Vec<NodeInfo> = Vec::new();
+        let mut visited: HashSet<String> = HashSet::new();
+        let mut queue: VecDeque<(String, usize)> = VecDeque::new();
+
+        /*// Добавляем сам узел с глубиной 0 и весом 1.0
+        descendants.push(NodeInfo {
+            node: start_node.to_string(),
+            depth: 0,
+            weight: 1.0,
+        });
+        visited.insert(start_node.to_string());*/
+        
+        // Добавляем всех непосредственных детей
+        if let Some(children) = self.childrens.get(start_node) {
+            for child in children {
+                queue.push_back((child.clone(), 1));
+            }
+        }
+
+        // BFS для поиска всех потомков
+        while let Some((current, relative_depth)) = queue.pop_front() {
+            if visited.insert(current.clone()) {
+                let weight = Self::calculate_weight(relative_depth);
+                descendants.push(NodeInfo {
+                    node: current.clone(),
+                    depth: relative_depth,
+                    weight,
+                });
+                
+                // Добавляем детей текущего узла
+                if let Some(children) = self.childrens.get(&current) {
+                    for child in children {
+                        if !visited.contains(child) {
+                            queue.push_back((child.clone(), relative_depth + 1));
+                        }
+                    }
+                }
+            }
+        }
+
+        // Сортируем по глубине, затем по имени для стабильности
+        descendants.sort_by(|a, b| {
+            a.depth.cmp(&b.depth).then_with(|| a.node.cmp(&b.node))
+        });
+
+        descendants
+    }
+
+    /// Вспомогательный метод для получения узлов по уровням
+    pub fn get_nodes_by_levels(&self) -> HashMap<usize, Vec<String>> {
+        let node_levels = self.compute_node_levels();
+        let mut levels: HashMap<usize, Vec<String>> = HashMap::new();
+        
+        for (node, level) in node_levels {
+            levels.entry(level).or_default().push(node);
+        }
+        
+        // Сортируем узлы в каждом уровне для стабильности
+        for nodes in levels.values_mut() {
+            nodes.sort();
+        }
+        
+        levels
+    }
+
+    /// Вычисляет уровень (глубину) каждого узла через топологическую сортировку
+    fn compute_node_levels(&self) -> HashMap<String, usize> {
+        let mut levels: HashMap<String, usize> = HashMap::new();
+        let mut in_degree: HashMap<String, usize> = HashMap::new();
+        let mut queue: VecDeque<String> = VecDeque::new();
+
+        // Инициализация степеней входа
+        for node in &self.nodes {
+            let degree = self.parents.get(node).map_or(0, |p| p.len());
+            in_degree.insert(node.clone(), degree);
+            
+            // Узлы без родителей (корни) имеют уровень 1
+            if degree == 0 {
+                levels.insert(node.clone(), 1);
+                queue.push_back(node.clone());
+            }
+        }
+
+        // Топологическая сортировка с вычислением уровней
+        while let Some(current) = queue.pop_front() {
+            let current_level = levels[&current];
+            
+            // Обрабатываем всех детей текущего узла
+            if let Some(children) = self.childrens.get(&current) {
                 for child in children {
-                    // Добавляем 1 к числу потомков узла на глубине depth.
-                    // Если depth == 1, учитываем самого ребёнка, иначе — его потомков с предыдущей итерации.
-                    let count = if depth == 1 { 1.0 } else { descendants_count[child] };
-                    *descendants_count.entry(node.clone()).or_insert(0.0) += count;
-                }
-            }
-            // Обновляем вес узла, добавляя damping_factor * число_потомков_на_глубине.
-            let weight = self.weights.get_mut(node).unwrap();
-            *weight += damping * descendants_count[node];
-        }
-    }
-    */
-    /*
-    /// Проверяет наличие цикла в графе с использованием алгоритма поиска в глубину (DFS).
-    /// Этот метод обходит весь граф, начиная с каждого непосещенного узла, и возвращает true,
-    /// если обнаруживается цикл, и false, если цикла нет.
-    /// 
-    /// # Возвращает
-    /// * `true` — Если в графе есть цикл.
-    /// * `false` — Если графа ацикличен.
-    
-    fn has_cycle(&self) -> bool {
-        // Создаем два множества для отслеживания состояния узлов:
-        let mut visited = HashSet::new(); // Посещенные узлы.
-        let mut rec_stack = HashSet::new(); // Узлы в текущем стеке рекурсии (для обнаружения обратных ребер).
-
-        // Проходим по всем узлам графа, чтобы учесть все компоненты связности.
-        for node in self.adj_list.keys() {
-            // Если для текущего узла обнаружен цикл, завершаем проверку.
-            if self.dfs_cycle(node, &mut visited, &mut rec_stack) {
-                return true;
-            }
-        }
-        // Если ни для одного узла цикл не найден, граф ацикличен.
-        false
-    }
-    
-    Вместо проверки всего графа в has_cycle, можно проверять только пути от нового узла к его родителям. Это требует модификации dfs_cycle:
-    // В graph.rs:
-    fn has_cycle_from(&self, start_node: &String) -> bool {
-        let mut visited = HashSet::new();
-        let mut rec_stack = HashSet::new();
-        self.dfs_cycle(start_node, &mut visited, &mut rec_stack)
-    }
-
-    // Используем в add_node_with_parents:
-    for parent in &existing_parents {
-        self.add_edge(parent.clone(), node_hash.clone());
-        if self.has_cycle_from(&node_hash) {
-            self.remove_edge(parent.clone(), node_hash.clone());
-            self.remove_node(node_hash.clone());
-            return Err("Cycle detected".to_string());
-        }
-    }
-    Текущая реализация has_cycle выполняет DFS для каждого узла, что даёт сложность O(V + E) для каждого вызова add_node_with_parents. Это дорого, особенно если граф большой.
-    Предлагаю кэшировать информацию о циклах или использовать инкрементальную проверку. Для начала можно оптимизировать has_cycle:
-    // В graph.rs, метод has_cycle:
-    fn has_cycle(&self) -> bool {
-        let mut visited = HashSet::new();
-        let mut rec_stack = HashSet::new();
-        // Проверяем только узлы, достижимые из новых рёбер, а не весь граф
-        for node in self.adj_list.keys() {
-            if !visited.contains(node) && self.dfs_cycle(node, &mut visited, &mut rec_stack) {
-                return true;
-            }
-        }
-        false
-    }
-    /// Вспомогательный метод для проверки цикла с использованием DFS.
-    /// Использует рекурсивный подход для обхода графа и поиска обратных ребер.
-    /// 
-    /// # Аргументы
-    /// * `node` — Текущий узел (ссылка на String), с которого начинается обход.
-    /// * `visited` — Множество (HashSet) узлов, которые уже были посещены в процессе обхода.
-    /// * `rec_stack` — Множество (HashSet) узлов в текущем стеке рекурсии.
-    /// 
-    /// # Возвращает
-    /// * `true` — Если обнаружен цикл.
-    /// * `false` — Если цикла нет.
-    fn dfs_cycle(&self, node: &String, visited: &mut HashSet<String>, rec_stack: &mut HashSet<String>) -> bool {
-        // Если узел уже находится в стеке рекурсии, это обратное ребро, и мы нашли цикл.
-        if rec_stack.contains(node) {
-            return true;
-        }
-
-        // Если узел уже посещён, но не в текущем стеке, он не создаёт цикла.
-        if visited.contains(node) {
-            return false;
-        }
-
-        // Отмечаем узел как посещённый и добавляем его в стек рекурсии.
-        visited.insert(node.clone());
-        rec_stack.insert(node.clone());
-
-        // Получаем список дочерних узлов текущего узла, если он есть в графе.
-        if let Some(neighbors) = self.adj_list.get(node) {
-            // Рекурсивно обходим всех соседей текущего узла.
-            for neighbor in neighbors {
-                if self.dfs_cycle(neighbor, visited, rec_stack) {
-                    return true; // Если цикл найден в поддереве, возвращаем true.
+                    // Уменьшаем степень входа
+                    let child_degree = in_degree.get_mut(child).unwrap();
+                    *child_degree -= 1;
+                    
+                    // Обновляем уровень ребёнка
+                    let new_level = current_level + 1;
+                    levels.entry(child.clone())
+                        .and_modify(|level| *level = (*level).max(new_level))
+                        .or_insert(new_level);
+                    
+                    // Если все родители обработаны, добавляем в очередь
+                    if *child_degree == 0 {
+                        queue.push_back(child.clone());
+                    }
                 }
             }
         }
 
-        // Удаляем узел из стека рекурсии, так как обход его поддерева завершён.
-        rec_stack.remove(node);
-        // Если цикла не найдено, возвращаем false.
-        false
-    }
-    */
-}
-
-// Модуль для юнит-тестов, который проверяет корректность работы методов структуры Graph.
-// Тесты компилируются и запускаются только при выполнении `cargo test`.
-#[cfg(test)]
-mod tests {
-    use super::*; // Импортируем все определения из внешнего блока impl для доступа к Graph.
-
-    /// Тест добавления нового узла в граф.
-    /// Проверяет, что узел корректно добавляется в список смежности и имеет пустой список дочерних узлов.
-    #[test]
-    fn test_add_node() {
-        let mut graph = Graph::new(); // Создаем новый пустой граф.
-        graph.add_node("node1".to_string()); // Добавляем узел с хэшем "node1".
-        assert!(graph.get_adj_list().contains_key("node1")); // Проверяем, что узел добавлен.
-        assert_eq!(graph.get_adj_list().get("node1").unwrap(), &Vec::<String>::new()); // Проверяем, что у узла нет детей.
-    }
-
-    /// Тест добавления ребра между двумя узлами.
-    /// Проверяет, что ребро корректно добавляется от узла `from` к узлу `to`.
-    #[test]
-    fn test_add_edge() {
-        let mut graph = Graph::new(); // Создаем новый пустой граф.
-        graph.add_node("node1".to_string()); // Добавляем узел "node1".
-        graph.add_node("node2".to_string()); // Добавляем узел "node2".
-        graph.add_edge("node1".to_string(), "node2".to_string()); // Добавляем ребро от "node1" к "node2".
-        assert_eq!(graph.get_adj_list().get("node1").unwrap(), &vec!["node2".to_string()]); // Проверяем, что у "node1" есть ребро к "node2".
-        assert_eq!(graph.get_adj_list().get("node2").unwrap(), &Vec::<String>::new()); // Проверяем, что у "node2" нет детей.
-    }
-
-    /// Тест успешного добавления узла с существующими родителями.
-    /// Проверяет, что новый узел добавляется, и от всех указанных родителей создаются ребра к нему.
-    #[test]
-    fn test_add_node_with_parents_success() {
-        let mut graph = Graph::new(); // Создаем новый пустой граф.
-        graph.add_node("node1".to_string()); // Добавляем узел "node1".
-        graph.add_node("node2".to_string()); // Добавляем узел "node2".
-        let result = graph.add_node_with_parents("node3".to_string(), vec!["node1".to_string(), "node2".to_string()]);
-        assert!(result.is_ok()); // Проверяем, что операция завершилась успешно.
-        assert_eq!(graph.get_adj_list().get("node1").unwrap(), &vec!["node3".to_string()]); // Проверяем ребро от "node1" к "node3".
-        assert_eq!(graph.get_adj_list().get("node2").unwrap(), &vec!["node3".to_string()]); // Проверяем ребро от "node2" к "node3".
-        assert_eq!(graph.get_adj_list().get("node3").unwrap(), &Vec::<String>::new()); // Проверяем, что у "node3" нет детей.
-    }
-
-    /// Тест ошибки при добавлении узла с несуществующими родителями.
-    /// Проверяет, что если все указанные родители отсутствуют в графе, возвращается ошибка.
-    #[test]
-    fn test_add_node_with_no_existing_parents() {
-        let mut graph = Graph::new(); // Создаем новый пустой граф.
-        let result = graph.add_node_with_parents("node3".to_string(), vec!["node1".to_string(), "node2".to_string()]);
-        assert_eq!(result, Err("No existing parents".to_string())); // Проверяем, что возвращена ошибка.
-        assert!(!graph.get_adj_list().contains_key("node3")); // Проверяем, что узел "node3" не был добавлен.
-    }
-
-    /// Тест ошибки при добавлении уже существующего узла с родителями.
-    /// Проверяет, что если узел с таким хэшем уже есть, метод возвращает ошибку.
-    #[test]
-    fn test_add_node_with_parents_already_exists() {
-        let mut graph = Graph::new(); // Создаем новый пустой граф.
-        graph.add_node("node1".to_string()); // Добавляем узел "node1".
-        graph.add_node("node2".to_string()); // Добавляем узел "node2".
-        let result = graph.add_node_with_parents("node1".to_string(), vec!["node2".to_string()]);
-        assert_eq!(result, Err("Node already exists".to_string())); // Проверяем, что возвращена ошибка.
-    }
-
-    /// Тест ошибки при создании цикла в графе.
-    /// Проверяет, что если добавление узла с родителями создает цикл, операция откатывается.
-    /*#[test]
-    fn test_add_node_with_parents_cycle() {
-        let mut graph = Graph::new(); // Создаем новый пустой граф.
-        graph.add_node("node1".to_string()); // Добавляем узел "node1".
-        graph.add_node("node2".to_string()); // Добавляем узел "node2".
-        graph.add_node("node3".to_string()); // Добавляем узел "node3".
-        graph.add_edge("node1".to_string(), "node2".to_string()); // Ребро: node1 → node2.
-        graph.add_edge("node2".to_string(), "node3".to_string()); // Ребро: node2 → node3.
-        graph.add_edge("node3".to_string(), "node1".to_string()); // Ребро: node3 → node1 (создаем цикл).
-        let result = graph.add_node_with_parents("node4".to_string(), vec!["node3".to_string()]);
-        assert_eq!(result, Err("Cycle detected".to_string())); // Проверяем, что возвращена ошибка о цикле.
-        assert!(!graph.get_adj_list().contains_key("node4")); // Проверяем, что "node4" не был добавлен.
-    }*/
-
-    /// Тест добавления узла с частично несуществующими родителями.
-    /// Проверяет, что узел добавляется с ребрами только от существующих родителей,
-    /// игнорируя несуществующие узлы в списке родителей.
-    #[test]
-    fn test_add_node_with_some_missing_parents() {
-        let mut graph = Graph::new(); // Создаем новый пустой граф.
-        graph.add_node("node1".to_string()); // Добавляем узел "node1".
-        graph.add_node("node2".to_string()); // Добавляем узел "node2".
-        let result = graph.add_node_with_parents(
-            "node3".to_string(),
-            vec!["node1".to_string(), "nodeX".to_string(), "node2".to_string()], // "nodeX" не существует.
-        );
-        assert!(result.is_ok()); // Проверяем, что операция завершилась успешно.
-        assert_eq!(graph.get_adj_list().get("node1").unwrap(), &vec!["node3".to_string()]); // Ребро от "node1" к "node3".
-        assert_eq!(graph.get_adj_list().get("node2").unwrap(), &vec!["node3".to_string()]); // Ребро от "node2" к "node3".
-        assert_eq!(graph.get_adj_list().get("node3").unwrap(), &Vec::<String>::new()); // У "node3" нет детей.
-        assert!(!graph.get_adj_list().contains_key("nodeX")); // Проверяем, что "nodeX" не был добавлен.
+        levels
     }
 }
