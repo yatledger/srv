@@ -376,11 +376,11 @@ async fn remove_handler(
 }
 
 // Функция для запуска HTTP-сервера.
-pub async fn start_server() -> Result<(), Box<dyn std::error::Error>> {
+pub async fn start_server(graph: Arc<RwLock<DAG>>) -> Result<(), Box<dyn std::error::Error>> {
     // Создаём новый граф и оборачиваем его в Arc<RwLock<_>> для потокобезопасного разделения.
     // Arc (Atomic Reference Counting) позволяет безопасно делить данные между потоками.
     // RwLock обеспечивает взаимоисключающий доступ к графу.
-    let graph = Arc::new(RwLock::new(DAG::new()));
+    // let graph = Arc::new(RwLock::new(DAG::new()));
     // Создаём маршруты для Axum-сервера.
     // Определяем один POST-эндпоинт /add_node, который вызывает add_node_handler.
     let app = Router::new()

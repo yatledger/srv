@@ -39,6 +39,8 @@ impl DAG {
                     // Итерируемся по ссылке на transactions, чтобы не перемещать вектор.
                     for tx in &transactions {
                         graph.add_node(tx.hash.clone());
+                        graph.calculate_weights();
+                        
                     }
                     println!("Loaded {} genesis transactions from genesis.json", transactions.len());
                 }
@@ -49,6 +51,8 @@ impl DAG {
         }
         // Добавляем тестовые данные
         // Узлы C, D с родителем A
+        /*graph.add_node("A".to_string());
+        graph.add_node("B".to_string());
         let _ = graph.add_node_with_parents("C".to_string(), vec!["A".to_string()]);
         let _ = graph.add_node_with_parents("D".to_string(), vec!["A".to_string()]);
 
@@ -108,7 +112,8 @@ impl DAG {
         let _ = graph.add_node_with_parents("Y".to_string(), vec!["W".to_string()]);
 
         // Узел Z с родителем X
-        let _ = graph.add_node_with_parents("Z".to_string(), vec!["X".to_string()]);
+        let _ = graph.add_node_with_parents("Z".to_string(), vec!["X".to_string()]);*/
+
         graph
     }
 
@@ -127,6 +132,14 @@ impl DAG {
 
     pub fn get_weights(&self) -> &Vec<Node> {
         &self.weights
+    }
+
+    pub fn get_nodes(&self) -> &HashSet<String> {
+        &self.nodes
+    }
+
+    pub fn get_node_count(&self) -> usize {
+        self.nodes.len()
     }
 
     pub fn contains_node(&self, node: &str) -> bool {
@@ -210,7 +223,7 @@ impl DAG {
         // XXX: xxx
         // FIXME: fix
         self.nodes.insert(node.clone());
-        self.childrens.entry(node.clone()).or_insert_with(Vec::new); // TODO: разобраться как правильней зосдавать новый узел
+        self.childrens.entry(node.clone()).or_insert_with(Vec::new); // TODO: разобраться как правильней сосдавать новый узел
         self.parents.entry(node.clone()).or_insert_with(Vec::new);
     }
 
