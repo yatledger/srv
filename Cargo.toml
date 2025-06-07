@@ -1,5 +1,5 @@
 [package]
-name = "dag_db"
+name = "dagdb"
 version = "0.1.0"
 edition = "2024"
 
