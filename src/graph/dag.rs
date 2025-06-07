@@ -17,7 +17,7 @@ pub struct DAG {
     parents: HashMap<String, Vec<String>>,
     // Все узлы
     nodes: HashSet<String>,
-    weights: HashMap<String, f64>,
+    weights: Vec<Node>,
 }
 
 
@@ -27,7 +27,7 @@ impl DAG {
             childrens: HashMap::new(),
             parents: HashMap::new(),
             nodes: HashSet::new(),
-            weights: HashMap::new(),
+            weights: Vec::new(),
         };
         let genesis_data = fs::read_to_string("genesis.json").map_err(|e| {
             eprintln!("Failed to read genesis.json: {}", e);
@@ -112,6 +112,10 @@ impl DAG {
         graph
     }
 
+    fn calculate_weights(&mut self) {
+        self.weights = get_all_weights(&self.childrens, &self.nodes);
+    }
+
     /// Возвращает неизменяемую ссылку на список смежности графа.
     pub fn get_childrens(&self) -> &HashMap<String, Vec<String>> {
         &self.childrens
@@ -119,6 +123,10 @@ impl DAG {
 
     pub fn get_parents(&self) -> &HashMap<String, Vec<String>> {
         &self.parents
+    }
+
+    pub fn get_weights(&self) -> &Vec<Node> {
+        &self.weights
     }
 
     pub fn contains_node(&self, node: &str) -> bool {
@@ -171,10 +179,7 @@ impl DAG {
 
         // Добавляем новый узел в граф с пустым списком дочерних узлов.
         // Используем clone(), так как node_hash будет использоваться дальше.
-        self.nodes.insert(node.clone());
-        self.childrens.insert(node.clone(), Vec::new());
-        self.parents.insert(node.clone(), Vec::new());
-        self.weights.insert(node.clone(), 0.0);
+        self.add_node(node.clone());
 
         // Проходим по каждому существующему родителю и добавляем ребро от него к новому узлу.
         for parent in &existing_parents {
@@ -190,6 +195,7 @@ impl DAG {
         }
 
         // Если все проверки пройдены и циклов нет, возвращаем успешный результат.
+        self.calculate_weights();
         Ok(())
     }
 
@@ -206,7 +212,6 @@ impl DAG {
         self.nodes.insert(node.clone());
         self.childrens.entry(node.clone()).or_insert_with(Vec::new); // TODO: разобраться как правильней зосдавать новый узел
         self.parents.entry(node.clone()).or_insert_with(Vec::new);
-        self.weights.insert(node.clone(), 0.0);
     }
 
     /// Добавляет направленное ребро от узла `from` к узлу `to`.
@@ -245,14 +250,7 @@ impl DAG {
             }
         }
         self.nodes.remove(&node);
-        self.weights.remove(&node);
-    }
-
-    pub fn get_all_weights(&self) -> Vec<Node> {
-        get_all_weights(
-            &self.childrens,
-            &self.nodes
-        )
+        self.calculate_weights();
     }
 
     pub fn compute_descendants_with_depth_and_weight(&self) -> HashMap<String, Vec<NodeInfo>> {

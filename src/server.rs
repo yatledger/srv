@@ -242,9 +242,9 @@ async fn get_weights_handler(State(graph): State<Arc<RwLock<DAG>>>) -> (StatusCo
             );
         }
     };
-    let weights = graph.get_all_weights();
+    let weights = graph.get_weights();
     let nodes = weights.into_iter().map(|node| NodeWeight {
-        hash: node.node,
+        hash: node.node.clone(),
         data: String::new(),
         weight: node.weight,
     }).collect();
@@ -275,7 +275,7 @@ async fn get_full_graph_handler(
         }
     };
 
-    let weights = graph.get_all_weights();
+    let weights = graph.get_weights();
     // Получаем потомков для всех узлов заранее, чтобы избежать повторных вычислений.
     let descendants_map = graph.compute_descendants_with_depth_and_weight();
 
@@ -296,7 +296,7 @@ async fn get_full_graph_handler(
                 .collect::<Vec<DescendantInfo>>();
 
             NodeFullInfo {
-                hash: node.node,
+                hash: node.node.clone(),
                 weight: node.weight,
                 descendants,
             }
