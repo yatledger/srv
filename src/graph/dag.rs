@@ -3,7 +3,7 @@
 use std::collections::{HashMap, HashSet};
 use std::fs; // Для чтения файла.
 use serde::Deserialize; // Для десериализации JSON.
-use crate::graph::weights::{Node, NodeInfo, get_all_weights, compute_descendants_with_depth_and_weight};
+use crate::graph::weights::{Node, NodeInfo, compute_weights, compute_descendants_with_depth_and_weight};
 // Структура для десериализации JSON с генезис-транзакциями.
 #[derive(Deserialize)]
 struct GenesisTransaction {
@@ -113,7 +113,7 @@ impl DAG {
     }
 
     fn calculate_weights(&mut self) {
-        self.weights = get_all_weights(&self.childrens, &self.nodes);
+        self.weights = compute_weights(&self.childrens, &self.nodes);
     }
 
     /// Возвращает неизменяемую ссылку на список смежности графа.

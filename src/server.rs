@@ -9,6 +9,8 @@ use serde::{Deserialize, Serialize}; // Для сериализации/десе
 use std::collections::HashMap; // Для возврата графа в JSON.
 use std::sync::{Arc, RwLock}; // Для безопасного разделения графа между потоками.
 use tokio::net::TcpListener; // Для запуска асинхронного TCP-сервера.
+use rand::seq::SliceRandom; // Для перемешивания финального списка узлов.
+use rand::rng; // Для генерации случайности.
 
 // Импортируем структуру DAG из вашего модуля graph.rs.
 use crate::graph::DAG;
@@ -110,12 +112,19 @@ async fn pool_handler(
         }
     };
 
-    // Собираем все хэши узлов из графа.
-    let mut nodes: Vec<String> = graph.get_childrens().keys().cloned().collect();
+    // Получаем веса узлов из графа.
+    let mut nodes = graph.get_weights().clone();
+    // Сортируем узлы по возрастанию веса.
+    nodes.sort_by(|a, b| a.weight.partial_cmp(&b.weight).unwrap_or(std::cmp::Ordering::Equal));
+
+    // Извлекаем только хэши узлов.
+    let mut nodes: Vec<String> = nodes.into_iter().map(|node| node.node).collect();
     // Вычисляем длину обрезанного списка как округлённый квадратный корень от числа узлов.
     let target_len = (nodes.len() as f64).sqrt().ceil() as usize;
     // Обрезаем список до target_len, если он длиннее.
-    nodes.truncate(target_len);
+    nodes.truncate(target_len); // XXX + nodes.len() / 3
+    // Перемешиваем финальный список узлов для "стабильности".
+    nodes.shuffle(&mut rng());
 
     // Возвращаем ответ с обрезанным списком узлов.
     (
@@ -275,7 +284,12 @@ async fn get_full_graph_handler(
         }
     };
 
-    let weights = graph.get_weights();
+    let mut weights = graph.get_weights().clone();
+    weights.sort_by(|a, b| {
+        b.weight.partial_cmp(&a.weight)
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then_with(|| a.node.cmp(&b.node))
+    });
     // Получаем потомков для всех узлов заранее, чтобы избежать повторных вычислений.
     let descendants_map = graph.compute_descendants_with_depth_and_weight();
 

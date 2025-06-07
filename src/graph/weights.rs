@@ -17,39 +17,20 @@ fn calculate_weight(depth: usize) -> f64 {
     1.0 / depth as f64
 }
 
-/// Получить финальные веса в виде отсортированного вектора узлов
-pub fn get_all_weights(
+/// Вычисляет итоговый вес каждого узла на основе суммы весов всех его потомков
+pub fn compute_weights(
     childrens: &HashMap<String, Vec<String>>,
     nodes: &HashSet<String>,
 ) -> Vec<Node> {
-    let weights = compute_weights(childrens, nodes);
-    let mut result: Vec<Node> = weights
-        .into_iter()
-        .map(|(node, weight)| Node { node, weight })
-        .collect();
-    
-    // Сортируем по весу (по убыванию) и алфавиту
-    // result.sort_by(|a, b| b.weight.partial_cmp(&a.weight).unwrap_or(std::cmp::Ordering::Equal));
-    result.sort_by(|a, b| {
-        b.weight.partial_cmp(&a.weight)
-            .unwrap_or(std::cmp::Ordering::Equal)
-            .then_with(|| a.node.cmp(&b.node))
-    });
-    
-    result
-}
-
-/// Вычисляет итоговый вес каждого узла на основе суммы весов всех его потомков
-fn compute_weights(
-    childrens: &HashMap<String, Vec<String>>,
-    nodes: &HashSet<String>,
-) -> HashMap<String, f64> {
     let descendants_map = compute_descendants_with_depth_and_weight(childrens, nodes);
-    let mut weights: HashMap<String, f64> = HashMap::new();
+    let mut weights: Vec<Node> = Vec::new();
     
     for (node, descendants) in descendants_map {
         let total_weight: f64 = descendants.iter().map(|d| d.weight).sum();
-        weights.insert(node, total_weight);
+        weights.push(Node {
+            node,
+            weight: total_weight,
+        });
     }
     
     weights
@@ -76,14 +57,6 @@ fn find_descendants_with_depth_and_weight(childrens: &HashMap<String, Vec<String
     let mut descendants: Vec<NodeInfo> = Vec::new();
     let mut visited: HashSet<String> = HashSet::new();
     let mut queue: VecDeque<(String, usize)> = VecDeque::new();
-
-    /*// Добавляем сам узел с глубиной 0 и весом 1.0
-    descendants.push(NodeInfo {
-        node: start_node.to_string(),
-        depth: 0,
-        weight: 1.0,
-    });
-    visited.insert(start_node.to_string());*/
     
     // Добавляем всех непосредственных детей
     if let Some(children) = childrens.get(start_node) {
@@ -114,9 +87,9 @@ fn find_descendants_with_depth_and_weight(childrens: &HashMap<String, Vec<String
     }
 
     // Сортируем по глубине, затем по имени для стабильности
-    descendants.sort_by(|a, b| {
+    /*descendants.sort_by(|a, b| {
         a.depth.cmp(&b.depth).then_with(|| a.node.cmp(&b.node))
-    });
+    });*/
 
     descendants
 }
