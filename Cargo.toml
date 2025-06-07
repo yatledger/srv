@@ -6,6 +6,7 @@ edition = "2024"
 [dependencies]
 axum = "0.7" # Фреймворк для создания HTTP-сервера.
 rand = "0.9.1"
+rayon = "1.10.0"
 serde = { version = "1.0", features = ["derive"] } # Для сериализации/десериализации JSON.
 serde_json = "1.0" # Для работы с JSON в graph.rs.
 tokio = { version = "1.0", features = ["full"] } # Асинхронный runtime.

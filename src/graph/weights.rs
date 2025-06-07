@@ -54,6 +54,7 @@ pub fn compute_descendants_with_depth_and_weight(
 
 /// Находит всех потомков узла с их глубиной и весом относительно этого узла
 fn find_descendants_with_depth_and_weight(childrens: &HashMap<String, Vec<String>>, start_node: &str) -> Vec<NodeInfo> {
+    // TODO Кэшировать только структуру потомков без веса
     let mut descendants: Vec<NodeInfo> = Vec::new();
     let mut visited: HashSet<String> = HashSet::new();
     let mut queue: VecDeque<(String, usize)> = VecDeque::new();
