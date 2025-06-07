@@ -81,6 +81,17 @@ struct FullGraphResponse {
     message: Option<String>,
 }
 
+#[derive(Deserialize)]
+struct RemoveRequest {
+    hashes: Vec<String>, // Список хэшей узлов для удаления.
+}
+
+#[derive(Serialize)]
+struct RemoveResponse {
+    status: String,
+    message: Option<String>,
+}
+
 async fn pool_handler(
     State(graph): State<Arc<RwLock<DAG>>>,
 ) -> (StatusCode, Json<PoolResponse>) {
@@ -100,7 +111,7 @@ async fn pool_handler(
     };
 
     // Собираем все хэши узлов из графа.
-    let mut nodes: Vec<String> = graph.get_adj_list().keys().cloned().collect();
+    let mut nodes: Vec<String> = graph.get_childrens().keys().cloned().collect();
     // Вычисляем длину обрезанного списка как округлённый квадратный корень от числа узлов.
     let target_len = (nodes.len() as f64).sqrt().ceil() as usize;
     // Обрезаем список до target_len, если он длиннее.
@@ -117,10 +128,8 @@ async fn pool_handler(
     )
 }
 
-// Обработчик для GET-запроса на /graph.
-// Возвращает текущий граф в виде JSON.
-async fn get_graph_handler(
-    State(graph): State<Arc<RwLock<DAG>>>, // Извлекаем граф из состояния.
+async fn get_childrens_handler(
+    State(graph): State<Arc<RwLock<DAG>>>,
 ) -> (StatusCode, Json<GraphResponse>) {
     // Получаем блокировку графа для безопасного доступа.
     let graph = match graph.read() {
@@ -136,13 +145,38 @@ async fn get_graph_handler(
             );
         }
     };
-
-    // Возвращаем граф как HashMap.
     (
         StatusCode::OK,
         Json(GraphResponse {
             status: "success".to_string(),
-            graph: Some(graph.get_adj_list().clone()), // Клонируем граф для сериализации.
+            graph: Some(graph.get_childrens().clone()),
+            message: None,
+        }),
+    )
+}
+
+async fn get_parents_handler(
+    State(graph): State<Arc<RwLock<DAG>>>,
+) -> (StatusCode, Json<GraphResponse>) {
+    // Получаем блокировку графа для безопасного доступа.
+    let graph = match graph.read() {
+        Ok(guard) => guard,
+        Err(_) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(GraphResponse {
+                    status: "error".to_string(),
+                    graph: None,
+                    message: Some("Failed to lock graph".to_string()),
+                }),
+            );
+        }
+    };
+    (
+        StatusCode::OK,
+        Json(GraphResponse {
+            status: "success".to_string(),
+            graph: Some(graph.get_parents().clone()),
             message: None,
         }),
     )
@@ -279,6 +313,54 @@ async fn get_full_graph_handler(
     )
 }
 
+// Обработчик для POST-запроса на /remove.
+// Удаляет список узлов из графа.
+async fn remove_handler(
+    State(graph): State<Arc<RwLock<DAG>>>,
+    Json(payload): Json<RemoveRequest>,
+) -> (StatusCode, Json<RemoveResponse>) {
+    // Получаем блокировку графа для записи.
+    let mut graph = match graph.write() {
+        Ok(guard) => guard,
+        Err(_) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(RemoveResponse {
+                    status: "error".to_string(),
+                    message: Some("Failed to lock graph".to_string()),
+                }),
+            );
+        }
+    };
+
+    // Проверяем, существуют ли все узлы в графе.
+    for hash in &payload.hashes {
+        if !graph.contains_node(hash) {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(RemoveResponse {
+                    status: "error".to_string(),
+                    message: Some(format!("Node {} does not exist", hash)),
+                }),
+            );
+        }
+    }
+
+    // Удаляем каждый узел из списка.
+    for hash in payload.hashes {
+        graph.remove_node(hash);
+    }
+
+    // Возвращаем успешный ответ.
+    (
+        StatusCode::OK,
+        Json(RemoveResponse {
+            status: "success".to_string(),
+            message: None,
+        }),
+    )
+}
+
 // Функция для запуска HTTP-сервера.
 pub async fn start_server() -> Result<(), Box<dyn std::error::Error>> {
     // Создаём новый граф и оборачиваем его в Arc<RwLock<_>> для потокобезопасного разделения.
@@ -288,11 +370,13 @@ pub async fn start_server() -> Result<(), Box<dyn std::error::Error>> {
     // Создаём маршруты для Axum-сервера.
     // Определяем один POST-эндпоинт /add_node, который вызывает add_node_handler.
     let app = Router::new()
-        .route("/add_node", post(add_node_handler))
-        .route("/graph", get(get_graph_handler))
+        .route("/add", post(add_node_handler))
+        .route("/childrens", get(get_childrens_handler))
+        .route("/parents", get(get_parents_handler))
         .route("/pool", get(pool_handler))
         .route("/weights", get(get_weights_handler))
-        .route("/full_graph", get(get_full_graph_handler))
+        .route("/full", get(get_full_graph_handler))
+        .route("/remove", post(remove_handler))
         .with_state(graph); // Передаём граф как состояние приложения.
 
     // Запускаем сервер на localhost:3000.

@@ -17,6 +17,7 @@ pub struct DAG {
     parents: HashMap<String, Vec<String>>,
     // Все узлы
     nodes: HashSet<String>,
+    weights: HashMap<String, f64>,
 }
 
 
@@ -26,6 +27,7 @@ impl DAG {
             childrens: HashMap::new(),
             parents: HashMap::new(),
             nodes: HashSet::new(),
+            weights: HashMap::new(),
         };
         let genesis_data = fs::read_to_string("genesis.json").map_err(|e| {
             eprintln!("Failed to read genesis.json: {}", e);
@@ -111,8 +113,16 @@ impl DAG {
     }
 
     /// Возвращает неизменяемую ссылку на список смежности графа.
-    pub fn get_adj_list(&self) -> &HashMap<String, Vec<String>> {
-        &self.childrens // Просто возвращаем ссылку на поле adj_list структуры.
+    pub fn get_childrens(&self) -> &HashMap<String, Vec<String>> {
+        &self.childrens
+    }
+
+    pub fn get_parents(&self) -> &HashMap<String, Vec<String>> {
+        &self.parents
+    }
+
+    pub fn contains_node(&self, node: &str) -> bool {
+        self.nodes.contains(node)
     }
 
     /// Добавляет новый узел в граф с указанными родителями и создает ребра от родителей к этому узлу.
@@ -164,6 +174,7 @@ impl DAG {
         self.nodes.insert(node.clone());
         self.childrens.insert(node.clone(), Vec::new());
         self.parents.insert(node.clone(), Vec::new());
+        self.weights.insert(node.clone(), 0.0);
 
         // Проходим по каждому существующему родителю и добавляем ребро от него к новому узлу.
         for parent in &existing_parents {
@@ -195,6 +206,7 @@ impl DAG {
         self.nodes.insert(node.clone());
         self.childrens.entry(node.clone()).or_insert_with(Vec::new); // TODO: разобраться как правильней зосдавать новый узел
         self.parents.entry(node.clone()).or_insert_with(Vec::new);
+        self.weights.insert(node.clone(), 0.0);
     }
 
     /// Добавляет направленное ребро от узла `from` к узлу `to`.
@@ -217,7 +229,7 @@ impl DAG {
     }*/
 
     /// Удаляет узел из графа и все ребра, которые ведут к нему.
-    fn remove_node(&mut self, node: String) {
+    pub fn remove_node(&mut self, node: String) {
         if let Some(children) = self.childrens.remove(&node) {
             for child in &children {
                 if let Some(parents) = self.parents.get_mut(child) {
@@ -233,12 +245,12 @@ impl DAG {
             }
         }
         self.nodes.remove(&node);
+        self.weights.remove(&node);
     }
 
     pub fn get_all_weights(&self) -> Vec<Node> {
         get_all_weights(
             &self.childrens,
-            &self.parents,
             &self.nodes
         )
     }
