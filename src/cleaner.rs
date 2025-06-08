@@ -1,5 +1,5 @@
 use std::sync::{Arc, RwLock};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tokio::time; // Для асинхронного sleep
 use rand;
 use crate::graph::DAG;
@@ -31,6 +31,7 @@ const NODE_COUNT_THRESHOLD: usize = 10; // Порог количества уз�
 /// - Порог NODE_COUNT_THRESHOLD делает очистку адаптивной к состоянию графа.
 /// - RwLock обеспечивает безопасный доступ к графу.
 pub async fn start_cleaner(graph: Arc<RwLock<DAG>>) {
+    let mut last_cleanup_time = Instant::now(); // Время последней очистки
 
     loop {
         // Минимальная задержка между итерациями
@@ -69,6 +70,10 @@ pub async fn start_cleaner(graph: Arc<RwLock<DAG>>) {
         // Вызываем remove_nodes для параллельного удаления
         match DAG::remove_nodes(Arc::clone(&graph), nodes_to_remove.clone()) {
             Ok(()) => {
+                // Вычисляем время с момента последней очистки
+                let current_time = Instant::now();
+                let time_since_last = current_time.duration_since(last_cleanup_time);
+                last_cleanup_time = current_time;
                 // Получаем актуальное количество узлов после удаления
                 let remaining_nodes = {
                     match graph.read() {
@@ -76,8 +81,8 @@ pub async fn start_cleaner(graph: Arc<RwLock<DAG>>) {
                         Err(_) => 0, // Если не удалось получить блокировку, показываем 0
                     }
                 };
-                println!("Successfully removed {} nodes. Total nodes remaining: {}", 
-                         nodes_to_remove.len(), remaining_nodes);
+                println!("Removed {}. Remaining: {}. Time: {:.2}s", 
+                         nodes_to_remove.len(), remaining_nodes, time_since_last.as_secs_f64());
             },
             Err(e) => eprintln!("Failed to remove nodes: {}", e),
         }
