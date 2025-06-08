@@ -124,7 +124,7 @@ impl DAG {
 
     fn calculate_weights(&mut self) {
         self.weights = compute_weights(&self.childrens, &self.nodes);
-        println!("Calculate weights for {} nodes", self.additions_since_last_weight_calc);
+        // println!("Calculate weights for {} nodes", self.additions_since_last_weight_calc);
         self.additions_since_last_weight_calc = 0;
     }
 

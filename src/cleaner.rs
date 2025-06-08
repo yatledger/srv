@@ -1,51 +1,40 @@
 use std::sync::{Arc, RwLock};
 use std::time::Duration;
-use tokio::time; // Для создания периодического таймера
-use crate::graph::DAG; // Импортируем структуру DAG из модуля graph
+use tokio::time; // Для асинхронного sleep
+use rand;
+use crate::graph::DAG;
 
 // Конфигурация для очистителя
 const WEIGHT_THRESHOLD: f64 = 10.0; // Порог веса для удаления узлов
-const CLEAN_INTERVAL: u64 = 1000; // Интервал очистки в милисекундах
+const CHECK_INTERVAL_MS: u64 = 100; // Минимальная задержка между проверками (в миллисекундах)
+const PROBABILITY: f64 = 0.1; // Вероятность запуска очистки (10%)
+const NODE_COUNT_THRESHOLD: usize = 10; // Порог количества узлов для гарантированной очистки
 
-/// Запускает фоновую задачу для периодической очистки узлов с весами выше порога.
-/// Использует пул потоков Rayon для параллельного удаления узлов и Tokio для асинхронного таймера.
+/// Запускает фоновую задачу для очистки узлов с весами выше порога.
+/// Использует вероятностный подход и порог по количеству узлов для удаления.
 /// 
 /// # Аргументы
 /// * `graph` - Потокобезопасный граф, обёрнутый в Arc<RwLock<DAG>>.
 /// 
 /// # Логика
-/// 1. Создаётся периодический таймер с интервалом CLEAN_INTERVAL секунд.
-/// 2. При каждом тике таймера:
-///    - Получаются текущие веса узлов.
-///    - Фильтруются узлы с весами выше порога WEIGHT_THRESHOLD.
-///    - Удаление узлов распределяется по пулу потоков Rayon для параллельной обработки.
-/// 3. Каждый поток безопасно получает доступ к графу через RwLock для удаления узлов.
+/// 1. В бесконечном цикле выполняется минимальная задержка (CHECK_INTERVAL_MS).
+/// 2. Получается список узлов для удаления с весами выше WEIGHT_THRESHOLD.
+/// 3. Очистка запускается, если:
+///    - Случайное число < PROBABILITY (10%).
+///    - Количество узлов для удаления >= NODE_COUNT_THRESHOLD.
+/// 4. При очистке:
+///    - Удаление узлов выполняется параллельно через Rayon.
+/// 5. Если узлов для удаления нет, выводится сообщение, и цикл продолжается.
 /// 
 /// # Замечания
-/// - Rayon автоматически распределяет задачи по доступным ядрам процессора.
-/// - RwLock обеспечивает безопасный доступ к графу для чтения и записи.
-/// - Ошибки блокировки обрабатываются с возвратом логов.
+/// - Минимальная задержка (CHECK_INTERVAL_MS) предотвращает чрезмерную нагрузку на CPU.
+/// - Порог NODE_COUNT_THRESHOLD делает очистку адаптивной к состоянию графа.
+/// - RwLock обеспечивает безопасный доступ к графу.
 pub async fn start_cleaner(graph: Arc<RwLock<DAG>>) {
-    // Создаём периодический таймер с интервалом CLEAN_INTERVAL секунд
-    let mut interval = time::interval(Duration::from_millis(CLEAN_INTERVAL));
-    
-    loop {
-        // Ожидаем следующий тик таймера
-        interval.tick().await;
-        //println!("Cleaner task started at {:?}", std::time::Instant::now());
 
-        // Выводим общее количество узлов в графе
-        let total_nodes = {
-            let graph_read = match graph.read() {
-                Ok(guard) => guard,
-                Err(e) => {
-                    eprintln!("Failed to lock graph for reading: {}", e);
-                    continue;
-                }
-            };
-            graph_read.get_node_count()
-        };
-        println!("Total nodes in graph: {}", total_nodes);
+    loop {
+        // Минимальная задержка между итерациями
+        time::sleep(Duration::from_millis(CHECK_INTERVAL_MS)).await;
 
         // Получаем блокировку графа для чтения весов
         let nodes_to_remove = {
@@ -56,7 +45,7 @@ pub async fn start_cleaner(graph: Arc<RwLock<DAG>>) {
                     continue;
                 }
             };
-            
+
             // Фильтруем узлы с весами выше порога
             graph_read
                 .get_weights()
@@ -66,6 +55,12 @@ pub async fn start_cleaner(graph: Arc<RwLock<DAG>>) {
                 .collect::<Vec<String>>()
         };
 
+        // Проверяем, нужно ли запускать очистку
+        let should_clean = rand::random::<f64>() < PROBABILITY || nodes_to_remove.len() >= NODE_COUNT_THRESHOLD;
+        if !should_clean {
+            continue;
+        }
+
         if nodes_to_remove.is_empty() {
             println!("No nodes to remove");
             continue;
@@ -73,7 +68,17 @@ pub async fn start_cleaner(graph: Arc<RwLock<DAG>>) {
 
         // Вызываем remove_nodes для параллельного удаления
         match DAG::remove_nodes(Arc::clone(&graph), nodes_to_remove.clone()) {
-            Ok(()) => println!("Successfully removed nodes {} nodes", nodes_to_remove.len()),
+            Ok(()) => {
+                // Получаем актуальное количество узлов после удаления
+                let remaining_nodes = {
+                    match graph.read() {
+                        Ok(guard) => guard.get_node_count(),
+                        Err(_) => 0, // Если не удалось получить блокировку, показываем 0
+                    }
+                };
+                println!("Successfully removed {} nodes. Total nodes remaining: {}", 
+                         nodes_to_remove.len(), remaining_nodes);
+            },
             Err(e) => eprintln!("Failed to remove nodes: {}", e),
         }
     }
