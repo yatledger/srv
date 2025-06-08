@@ -362,7 +362,7 @@ async fn remove_handler(
 
     // Удаляем каждый узел из списка.
     for hash in payload.hashes {
-        graph.remove_node(hash, Some(true));
+        graph.remove_node(hash);
     }
 
     // Возвращаем успешный ответ.

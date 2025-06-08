@@ -5,6 +5,7 @@ use std::fs; // Для чтения файла.
 use std::sync::{Arc, RwLock};
 use serde::Deserialize; // Для десериализации JSON.
 use rayon::prelude::*; // Для параллельной обработки
+use rand::Rng; // Для генерации случайных чисел
 use crate::graph::weights::{Node, NodeInfo, compute_weights, compute_descendants_with_depth_and_weight};
 // Структура для десериализации JSON с генезис-транзакциями.
 #[derive(Deserialize)]
@@ -20,6 +21,7 @@ pub struct DAG {
     // Все узлы
     nodes: HashSet<String>,
     weights: Vec<Node>,
+    additions_since_last_weight_calc: usize,
 }
 
 
@@ -30,6 +32,7 @@ impl DAG {
             parents: HashMap::new(),
             nodes: HashSet::new(),
             weights: Vec::new(),
+            additions_since_last_weight_calc: 0,
         };
         let genesis_data = fs::read_to_string("genesis.json").map_err(|e| {
             eprintln!("Failed to read genesis.json: {}", e);
@@ -121,7 +124,8 @@ impl DAG {
 
     fn calculate_weights(&mut self) {
         self.weights = compute_weights(&self.childrens, &self.nodes);
-        // println!("WEIGHTS!!!")
+        println!("Calculate weights for {} nodes", self.additions_since_last_weight_calc);
+        self.additions_since_last_weight_calc = 0;
     }
 
     /// Возвращает неизменяемую ссылку на список смежности графа.
@@ -210,8 +214,15 @@ impl DAG {
             }*/
         }
 
-        // Если все проверки пройдены и циклов нет, возвращаем успешный результат.
-        self.calculate_weights();
+        // Увеличиваем счетчик добавлений
+        self.additions_since_last_weight_calc += 1;
+
+        // Вероятностный пересчет весов или пересчет по порогу
+        let mut rng = rand::rngs::ThreadRng::default();
+        let should_recalculate = rng.random::<f64>() < 0.1 || self.additions_since_last_weight_calc >= 10;
+        if should_recalculate {
+            self.calculate_weights();
+        }
         Ok(())
     }
 
@@ -255,7 +266,7 @@ impl DAG {
     /// # Аргументы
     /// * `node` - Хэш узла для удаления.
     /// * `sync` - Если Some(true), пересчитывает веса графа после удаления; если Some(false) или None, веса не пересчитываются.
-    pub fn remove_node(&mut self, node: String, sync: Option<bool>) {
+    pub fn remove_node(&mut self, node: String) {
         if let Some(children) = self.childrens.remove(&node) {
             for child in &children {
                 if let Some(parents) = self.parents.get_mut(child) {
@@ -271,9 +282,6 @@ impl DAG {
             }
         }
         self.nodes.remove(&node);
-        if sync.unwrap_or(false) {
-            self.calculate_weights();
-        }
     }
 
     /// Удаляет список узлов из графа параллельно с использованием Rayon.
@@ -313,9 +321,8 @@ impl DAG {
                     return;
                 }
             };
-            // Вызываем remove_node с sync = Some(false)
             if graph_write.contains_node(node) {
-                graph_write.remove_node(node.clone(), Some(false));
+                graph_write.remove_node(node.clone());
             }
         });
 
