@@ -1,12 +1,11 @@
 use std::sync::{Arc, RwLock};
 use std::time::Duration;
 use tokio::time; // Для создания периодического таймера
-use rayon::prelude::*; // Для параллельной обработки
 use crate::graph::DAG; // Импортируем структуру DAG из модуля graph
 
 // Конфигурация для очистителя
 const WEIGHT_THRESHOLD: f64 = 10.0; // Порог веса для удаления узлов
-const CLEAN_INTERVAL: u64 = 1; // Интервал очистки в секундах
+const CLEAN_INTERVAL: u64 = 1000; // Интервал очистки в милисекундах
 
 /// Запускает фоновую задачу для периодической очистки узлов с весами выше порога.
 /// Использует пул потоков Rayon для параллельного удаления узлов и Tokio для асинхронного таймера.
@@ -28,7 +27,7 @@ const CLEAN_INTERVAL: u64 = 1; // Интервал очистки в секун�
 /// - Ошибки блокировки обрабатываются с возвратом логов.
 pub async fn start_cleaner(graph: Arc<RwLock<DAG>>) {
     // Создаём периодический таймер с интервалом CLEAN_INTERVAL секунд
-    let mut interval = time::interval(Duration::from_secs(CLEAN_INTERVAL));
+    let mut interval = time::interval(Duration::from_millis(CLEAN_INTERVAL));
     
     loop {
         // Ожидаем следующий тик таймера
@@ -72,22 +71,10 @@ pub async fn start_cleaner(graph: Arc<RwLock<DAG>>) {
             continue;
         }
 
-        println!("Nodes to remove: {:?}", nodes_to_remove.len());
-
-        // Параллельно удаляем узлы, используя пул потоков Rayon
-        nodes_to_remove.par_iter().for_each(|node| {
-            // Получаем блокировку графа для записи
-            let mut graph_write = match graph.write() {
-                Ok(guard) => guard,
-                Err(e) => {
-                    eprintln!("Failed to lock graph for writing: {}", e);
-                    return;
-                }
-            };
-            
-            // Удаляем узел
-            graph_write.remove_node(node.clone());
-            // println!("Removed node: {}", node);
-        });
+        // Вызываем remove_nodes для параллельного удаления
+        match DAG::remove_nodes(Arc::clone(&graph), nodes_to_remove.clone()) {
+            Ok(()) => println!("Successfully removed nodes {} nodes", nodes_to_remove.len()),
+            Err(e) => eprintln!("Failed to remove nodes: {}", e),
+        }
     }
 }

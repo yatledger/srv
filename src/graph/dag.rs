@@ -2,7 +2,9 @@
 // HashMap используется для хранения списка смежности, а HashSet — для проверки циклов в DFS.
 use std::collections::{HashMap, HashSet};
 use std::fs; // Для чтения файла.
+use std::sync::{Arc, RwLock};
 use serde::Deserialize; // Для десериализации JSON.
+use rayon::prelude::*; // Для параллельной обработки
 use crate::graph::weights::{Node, NodeInfo, compute_weights, compute_descendants_with_depth_and_weight};
 // Структура для десериализации JSON с генезис-транзакциями.
 #[derive(Deserialize)]
@@ -119,6 +121,7 @@ impl DAG {
 
     fn calculate_weights(&mut self) {
         self.weights = compute_weights(&self.childrens, &self.nodes);
+        // println!("WEIGHTS!!!")
     }
 
     /// Возвращает неизменяемую ссылку на список смежности графа.
@@ -247,7 +250,12 @@ impl DAG {
     }*/
 
     /// Удаляет узел из графа и все ребра, которые ведут к нему.
-    pub fn remove_node(&mut self, node: String) {
+    /// Удаляет узел из графа и все связанные с ним рёбра.
+    /// 
+    /// # Аргументы
+    /// * `node` - Хэш узла для удаления.
+    /// * `sync` - Если Some(true), пересчитывает веса графа после удаления; если Some(false) или None, веса не пересчитываются.
+    pub fn remove_node(&mut self, node: String, sync: Option<bool>) {
         if let Some(children) = self.childrens.remove(&node) {
             for child in &children {
                 if let Some(parents) = self.parents.get_mut(child) {
@@ -263,7 +271,58 @@ impl DAG {
             }
         }
         self.nodes.remove(&node);
-        self.calculate_weights();
+        if sync.unwrap_or(false) {
+            self.calculate_weights();
+        }
+    }
+
+    /// Удаляет список узлов из графа параллельно с использованием Rayon.
+    /// Использует Arc<RwLock<DAG>> для потокобезопасного доступа и вызывает remove_node для каждого узла.
+    /// 
+    /// # Аргументы
+    /// * `graph` - Потокобезопасный граф, обёрнутый в Arc<RwLock<DAG>>.
+    /// * `nodes` - Вектор хэшей узлов (Vec<String>) для удаления.
+    /// 
+    /// # Логика
+    /// 1. Проверяется наличие всех узлов в графе с блокировкой чтения.
+    /// 2. Для каждого узла параллельно:
+    ///    - Получается блокировка записи через RwLock.
+    ///    - Вызывается remove_node с sync = Some(false) для удаления узла без пересчёта весов.
+    /// 3. После всех удалений пересчитываются веса с одной блокировкой записи.
+    /// 
+    /// # Возвращает
+    /// * `Ok(())` - Если все узлы успешно удалены.
+    /// * `Err(String)` - Если хотя бы один узел не существует или не удалось получить блокировку.
+    pub fn remove_nodes(graph: Arc<RwLock<DAG>>, nodes: Vec<String>) -> Result<(), String> {
+        // Проверяем наличие всех узлов с блокировкой чтения
+        {
+            let graph_read = graph.read().map_err(|e| format!("Failed to lock graph for reading: {}", e))?;
+            for node in &nodes {
+                if !graph_read.contains_node(node) {
+                    return Err(format!("Node {} does not exist", node));
+                }
+            }
+        }
+
+        // Параллельно удаляем узлы
+        nodes.par_iter().for_each(|node| {
+            let mut graph_write = match graph.write() {
+                Ok(guard) => guard,
+                Err(e) => {
+                    eprintln!("Failed to lock graph for writing: {}", e);
+                    return;
+                }
+            };
+            // Вызываем remove_node с sync = Some(false)
+            if graph_write.contains_node(node) {
+                graph_write.remove_node(node.clone(), Some(false));
+            }
+        });
+
+        // Пересчитываем веса однократно
+        let mut graph_write = graph.write().map_err(|e| format!("Failed to lock graph for writing: {}", e))?;
+        graph_write.calculate_weights();
+        Ok(())
     }
 
     pub fn compute_descendants_with_depth_and_weight(&self) -> HashMap<String, Vec<NodeInfo>> {
