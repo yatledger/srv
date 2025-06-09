@@ -118,7 +118,7 @@ async fn pool_handler(
     nodes.sort_by(|a, b| a.weight.partial_cmp(&b.weight).unwrap_or(std::cmp::Ordering::Equal));
 
     // Извлекаем только хэши узлов.
-    let mut nodes: Vec<String> = nodes.into_iter().map(|node| node.node).collect();
+    let mut nodes: Vec<String> = nodes.into_iter().map(|node| String::from(&*node.node)).collect();
     // Выполняем обрезку и перемешивание только если nodes.len() > 10.
     if nodes.len() > 10 {
         // Обрезаем список до nodes.len() / 3.
@@ -160,11 +160,16 @@ async fn get_childrens_handler(
             );
         }
     };
+    let graph_data = graph
+        .get_childrens()
+        .iter()
+        .map(|(k, v)| (String::from(&**k), v.iter().map(|s| String::from(&**s)).collect()))
+        .collect();
     (
         StatusCode::OK,
         Json(GraphResponse {
             status: "success".to_string(),
-            graph: Some(graph.get_childrens().clone()),
+            graph: Some(graph_data),
             message: None,
         }),
     )
@@ -187,11 +192,16 @@ async fn get_parents_handler(
             );
         }
     };
+    let graph_data = graph
+        .get_parents()
+        .iter()
+        .map(|(k, v)| (String::from(&**k), v.iter().map(|s| String::from(&**s)).collect()))
+        .collect();
     (
         StatusCode::OK,
         Json(GraphResponse {
             status: "success".to_string(),
-            graph: Some(graph.get_parents().clone()),
+            graph: Some(graph_data),
             message: None,
         }),
     )
@@ -221,9 +231,11 @@ async fn add_node_handler(
     };
     // let duration = start.elapsed(); // Вычисляем время выполнения.
     // println!("add_node_handler took {} ms", duration.as_millis());
-
+    // Преобразуем String в Arc<str>
+    let hash = Arc::from(payload.hash.as_str());
+    let parents = payload.parents.into_iter().map(|s| Arc::from(s.as_str())).collect();
     // Вызываем метод add_node_with_parents на графе.
-    match graph.add_node_with_parents(payload.hash, payload.parents) {
+    match graph.add_node_with_parents(hash, parents) {
         Ok(()) => (
             // Успешное добавление узла.
             StatusCode::OK,
@@ -259,7 +271,7 @@ async fn get_weights_handler(State(graph): State<Arc<RwLock<DAG>>>) -> (StatusCo
     };
     let weights = graph.get_weights();
     let nodes = weights.into_iter().map(|node| NodeWeight {
-        hash: node.node.clone(),
+        hash: String::from(&*node.node),
         data: String::new(),
         weight: node.weight,
     }).collect();
@@ -309,14 +321,14 @@ async fn get_full_graph_handler(
                 .unwrap_or(&Vec::new()) // Если нет потомков, возвращаем пустой вектор.
                 .iter()
                 .map(|descendant| DescendantInfo {
-                    hash: descendant.node.clone(),
+                    hash: String::from(&*descendant.node),
                     depth: descendant.depth,
                     weight: descendant.weight,
                 })
                 .collect::<Vec<DescendantInfo>>();
 
             NodeFullInfo {
-                hash: node.node.clone(),
+                hash: String::from(&*node.node),
                 weight: node.weight,
                 descendants,
             }
@@ -368,7 +380,7 @@ async fn remove_handler(
 
     // Удаляем каждый узел из списка.
     for hash in payload.hashes {
-        graph.remove_node(hash);
+        graph.remove_node(Arc::from(hash.as_str()));
     }
 
     // Возвращаем успешный ответ.

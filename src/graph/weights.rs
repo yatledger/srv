@@ -1,15 +1,16 @@
 use std::collections::{HashMap, HashSet, VecDeque};
+use std::sync::Arc;
 
 #[derive(Debug, Clone)]
 pub struct NodeInfo {
-    pub node: String,
+    pub node: Arc<str>,
     pub depth: usize,
     pub weight: f64,
 }
 
 #[derive(Debug, Clone)]
 pub struct Node {
-    pub node: String,
+    pub node: Arc<str>,
     pub weight: f64,
 }
 /// Вычисляет вес узла по простой формуле: 1/depth
@@ -19,8 +20,8 @@ fn calculate_weight(depth: usize) -> f64 {
 
 /// Вычисляет итоговый вес каждого узла на основе суммы весов всех его потомков
 pub fn compute_weights(
-    childrens: &HashMap<String, Vec<String>>,
-    nodes: &HashSet<String>,
+    childrens: &HashMap<Arc<str>, Vec<Arc<str>>>,
+    nodes: &HashSet<Arc<str>>,
 ) -> Vec<Node> {
     let descendants_map = compute_descendants_with_depth_and_weight(childrens, nodes);
     let mut weights: Vec<Node> = Vec::new();
@@ -39,10 +40,10 @@ pub fn compute_weights(
 /// Основной алгоритм: вычисляет всех потомков для каждого узла с их глубиной и весом
 /// Использует простую формулу: вес = 1/глубина
 pub fn compute_descendants_with_depth_and_weight(
-    childrens: &HashMap<String, Vec<String>>,
-    nodes: &HashSet<String>,
-) -> HashMap<String, Vec<NodeInfo>> {
-    let mut result: HashMap<String, Vec<NodeInfo>> = HashMap::new();
+    childrens: &HashMap<Arc<str>, Vec<Arc<str>>>,
+    nodes: &HashSet<Arc<str>>,
+) -> HashMap<Arc<str>, Vec<NodeInfo>> {
+    let mut result: HashMap<Arc<str>, Vec<NodeInfo>> = HashMap::new();
     
     for node in nodes {
         let descendants = find_descendants_with_depth_and_weight(childrens, node);
@@ -53,11 +54,11 @@ pub fn compute_descendants_with_depth_and_weight(
 }
 
 /// Находит всех потомков узла с их глубиной и весом относительно этого узла
-fn find_descendants_with_depth_and_weight(childrens: &HashMap<String, Vec<String>>, start_node: &str) -> Vec<NodeInfo> {
+fn find_descendants_with_depth_and_weight(childrens: &HashMap<Arc<str>, Vec<Arc<str>>>, start_node: &str) -> Vec<NodeInfo> {
     // TODO Кэшировать только структуру потомков без веса
     let mut descendants: Vec<NodeInfo> = Vec::new();
-    let mut visited: HashSet<String> = HashSet::new();
-    let mut queue: VecDeque<(String, usize)> = VecDeque::new();
+    let mut visited: HashSet<Arc<str>> = HashSet::new();
+    let mut queue: VecDeque<(Arc<str>, usize)> = VecDeque::new();
     
     // Добавляем всех непосредственных детей
     if let Some(children) = childrens.get(start_node) {

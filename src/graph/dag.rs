@@ -15,11 +15,11 @@ struct GenesisTransaction {
 
 pub struct DAG {
     // Граф: узел -> список детей
-    childrens: HashMap<String, Vec<String>>,
+    childrens: HashMap<Arc<str>, Vec<Arc<str>>>,
     // Обратный граф: узел -> список родителей  
-    parents: HashMap<String, Vec<String>>,
+    parents: HashMap<Arc<str>, Vec<Arc<str>>>,
     // Все узлы
-    nodes: HashSet<String>,
+    nodes: HashSet<Arc<str>>,
     weights: Vec<Node>,
     additions_since_last_weight_calc: usize,
 }
@@ -43,7 +43,8 @@ impl DAG {
                 Ok(transactions) => {
                     // Итерируемся по ссылке на transactions, чтобы не перемещать вектор.
                     for tx in &transactions {
-                        graph.add_node(tx.hash.clone());
+                        let hash = Arc::from(tx.hash.as_str());
+                        graph.add_node(hash);
                         graph.calculate_weights();
                         
                     }
@@ -129,11 +130,11 @@ impl DAG {
     }
 
     /// Возвращает неизменяемую ссылку на список смежности графа.
-    pub fn get_childrens(&self) -> &HashMap<String, Vec<String>> {
+    pub fn get_childrens(&self) -> &HashMap<Arc<str>, Vec<Arc<str>>> {
         &self.childrens
     }
 
-    pub fn get_parents(&self) -> &HashMap<String, Vec<String>> {
+    pub fn get_parents(&self) -> &HashMap<Arc<str>, Vec<Arc<str>>> {
         &self.parents
     }
 
@@ -141,7 +142,7 @@ impl DAG {
         &self.weights
     }
 
-    pub fn get_nodes(&self) -> &HashSet<String> {
+    pub fn get_nodes(&self) -> &HashSet<Arc<str>> {
         &self.nodes
     }
 
@@ -176,7 +177,7 @@ impl DAG {
     ///   - Узел с таким хэшем уже существует ("Node already exists").
     ///   - Нет ни одного существующего родителя ("No existing parents").
     ///   - Добавление ребра создает цикл ("Cycle detected").
-    pub fn add_node_with_parents(&mut self, node: String, parents: Vec<String>) -> Result<(), String> {
+    pub fn add_node_with_parents(&mut self, node: Arc<str>, parents: Vec<Arc<str>>) -> Result<(), String> {
         // Проверяем, существует ли уже узел с таким хэшем в графе.
         // Это важно для предотвращения дублирования узлов и сохранения уникальности идентификаторов.
         if self.childrens.contains_key(&node) {
@@ -227,7 +228,7 @@ impl DAG {
     }
 
     /// Добавляет новый узел в граф без указания родителей.
-    fn add_node(&mut self, node: String) {
+    fn add_node(&mut self, node: Arc<str>) {
         // Используем метод entry для доступа к записи в HashMap.
         // or_insert_with добавляет пустой вектор, если узла ещё нет, и ничего не делает, если узел уже существует.
         // [ ] Doooo
@@ -242,7 +243,7 @@ impl DAG {
     }
 
     /// Добавляет направленное ребро от узла `from` к узлу `to`.
-    fn add_edge(&mut self, from: String, to: String) {
+    fn add_edge(&mut self, from: Arc<str>, to: Arc<str>) {
         // Используем entry для доступа к записи узла `from` в HashMap.
         // and_modify изменяет существующий вектор дочерних узлов, добавляя `to`.
         // or_insert_with создает новый вектор с `to`, если узла `from` ещё нет.
@@ -266,7 +267,7 @@ impl DAG {
     /// # Аргументы
     /// * `node` - Хэш узла для удаления.
     /// * `sync` - Если Some(true), пересчитывает веса графа после удаления; если Some(false) или None, веса не пересчитываются.
-    pub fn remove_node(&mut self, node: String) {
+    pub fn remove_node(&mut self, node: Arc<str>) {
         if let Some(children) = self.childrens.remove(&node) {
             for child in &children {
                 if let Some(parents) = self.parents.get_mut(child) {
@@ -301,7 +302,7 @@ impl DAG {
     /// # Возвращает
     /// * `Ok(())` - Если все узлы успешно удалены.
     /// * `Err(String)` - Если хотя бы один узел не существует или не удалось получить блокировку.
-    pub fn remove_nodes(graph: Arc<RwLock<DAG>>, nodes: Vec<String>) -> Result<(), String> {
+    pub fn remove_nodes(graph: Arc<RwLock<DAG>>, nodes: Vec<Arc<str>>) -> Result<(), String> {
         // Проверяем наличие всех узлов с блокировкой чтения
         {
             let graph_read = graph.read().map_err(|e| format!("Failed to lock graph for reading: {}", e))?;
@@ -332,7 +333,7 @@ impl DAG {
         Ok(())
     }
 
-    pub fn compute_descendants_with_depth_and_weight(&self) -> HashMap<String, Vec<NodeInfo>> {
+    pub fn compute_descendants_with_depth_and_weight(&self) -> HashMap<Arc<str>, Vec<NodeInfo>> {
         compute_descendants_with_depth_and_weight(
             &self.childrens,
             &self.nodes

@@ -53,7 +53,7 @@ pub async fn start_cleaner(graph: Arc<RwLock<DAG>>) {
                 .iter()
                 .filter(|node| node.weight > WEIGHT_THRESHOLD)
                 .map(|node| node.node.clone())
-                .collect::<Vec<String>>()
+                .collect::<Vec<Arc<str>>>()
         };
 
         // Проверяем, нужно ли запускать очистку
