@@ -1,5 +1,8 @@
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::Arc;
+use rayon::prelude::*; // Для параллельной обработки
+use rayon::ThreadPoolBuilder;
+use num_cpus;
 
 #[derive(Debug, Clone)]
 pub struct NodeInfo {
@@ -13,6 +16,7 @@ pub struct Node {
     pub node: Arc<str>,
     pub weight: f64,
 }
+
 /// Вычисляет вес узла по простой формуле: 1/depth
 fn calculate_weight(depth: usize) -> f64 {
     1.0 / depth as f64
@@ -43,14 +47,39 @@ pub fn compute_descendants_with_depth_and_weight(
     childrens: &HashMap<Arc<str>, Vec<Arc<str>>>,
     nodes: &HashSet<Arc<str>>,
 ) -> HashMap<Arc<str>, Vec<NodeInfo>> {
-    let mut result: HashMap<Arc<str>, Vec<NodeInfo>> = HashMap::new();
+    let available_cpus = num_cpus::get();
+    let num_threads = (available_cpus / 2).max(1); // минимум 1 поток
+    let pool = ThreadPoolBuilder::new()
+        .num_threads(num_threads)  // можно подогнать под ваше железо
+        .build()
+        .unwrap();
+
+    let result = pool.install(|| {
+        nodes
+            .par_iter()
+            .map(|node| {
+                let descendants = find_descendants_with_depth_and_weight(childrens, node);
+                (node.clone(), descendants)
+            })
+            .collect::<HashMap<_, _>>()
+    });
+    
+    result
+    /*let mut result: HashMap<Arc<str>, Vec<NodeInfo>> = HashMap::new();
     
     for node in nodes {
         let descendants = find_descendants_with_depth_and_weight(childrens, node);
         result.insert(node.clone(), descendants);
-    }
-    
-    result
+    } */
+    /*
+    nodes
+        .par_iter()
+        .map(|node| {
+            let descendants = find_descendants_with_depth_and_weight(childrens, node);
+            (node.clone(), descendants)
+        })
+        .collect()::<HashMap<Arc<str>, Vec<NodeInfo>>>()
+    */
 }
 
 /// Находит всех потомков узла с их глубиной и весом относительно этого узла
@@ -58,12 +87,12 @@ fn find_descendants_with_depth_and_weight(childrens: &HashMap<Arc<str>, Vec<Arc<
     // TODO Кэшировать только структуру потомков без веса
     let mut descendants: Vec<NodeInfo> = Vec::new();
     let mut visited: HashSet<Arc<str>> = HashSet::new();
-    let mut queue: VecDeque<(Arc<str>, usize)> = VecDeque::new();
+    let mut queue: VecDeque<(&Arc<str>, usize)> = VecDeque::new();
     
     // Добавляем всех непосредственных детей
     if let Some(children) = childrens.get(start_node) {
         for child in children {
-            queue.push_back((child.clone(), 1));
+            queue.push_back((child, 1));
         }
     }
 
@@ -78,10 +107,10 @@ fn find_descendants_with_depth_and_weight(childrens: &HashMap<Arc<str>, Vec<Arc<
             });
             
             // Добавляем детей текущего узла
-            if let Some(children) = childrens.get(&current) {
+            if let Some(children) = childrens.get(current) {
                 for child in children {
                     if !visited.contains(child) {
-                        queue.push_back((child.clone(), relative_depth + 1));
+                        queue.push_back((child, relative_depth + 1));
                     }
                 }
             }
