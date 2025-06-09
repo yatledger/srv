@@ -4,6 +4,8 @@ use rayon::prelude::*; // Для параллельной обработки
 use rayon::ThreadPoolBuilder;
 use num_cpus;
 
+use crate::Adjacency;
+
 #[derive(Debug, Clone)]
 pub struct NodeInfo {
     pub node: Arc<str>,
@@ -24,7 +26,7 @@ fn calculate_weight(depth: usize) -> f64 {
 
 /// Вычисляет итоговый вес каждого узла на основе суммы весов всех его потомков
 pub fn compute_weights(
-    childrens: &HashMap<Arc<str>, Vec<Arc<str>>>,
+    childrens: &Adjacency,
     nodes: &HashSet<Arc<str>>,
 ) -> Vec<Node> {
     let descendants_map = compute_descendants_with_depth_and_weight(childrens, nodes);
@@ -44,7 +46,7 @@ pub fn compute_weights(
 /// Основной алгоритм: вычисляет всех потомков для каждого узла с их глубиной и весом
 /// Использует простую формулу: вес = 1/глубина
 pub fn compute_descendants_with_depth_and_weight(
-    childrens: &HashMap<Arc<str>, Vec<Arc<str>>>,
+    childrens: &Adjacency,
     nodes: &HashSet<Arc<str>>,
 ) -> HashMap<Arc<str>, Vec<NodeInfo>> {
     let available_cpus = num_cpus::get();

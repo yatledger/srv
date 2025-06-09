@@ -7,17 +7,21 @@ use serde::Deserialize; // Для десериализации JSON.
 use rayon::prelude::*; // Для параллельной обработки
 use rand::Rng; // Для генерации случайных чисел
 use crate::graph::weights::{Node, NodeInfo, compute_weights, compute_descendants_with_depth_and_weight};
+use crate::Adjacency;
+
 // Структура для десериализации JSON с генезис-транзакциями.
 #[derive(Deserialize)]
 struct GenesisTransaction {
     hash: String, // Хэш генезис-узла.
 }
 
+
+
 pub struct DAG {
     // Граф: узел -> список детей
-    childrens: HashMap<Arc<str>, Vec<Arc<str>>>,
+    childrens: Adjacency,
     // Обратный граф: узел -> список родителей  
-    parents: HashMap<Arc<str>, Vec<Arc<str>>>,
+    parents: Adjacency,
     // Все узлы
     nodes: HashSet<Arc<str>>,
     weights: Vec<Node>,
@@ -130,11 +134,11 @@ impl DAG {
     }
 
     /// Возвращает неизменяемую ссылку на список смежности графа.
-    pub fn get_childrens(&self) -> &HashMap<Arc<str>, Vec<Arc<str>>> {
+    pub fn get_childrens(&self) -> &Adjacency {
         &self.childrens
     }
 
-    pub fn get_parents(&self) -> &HashMap<Arc<str>, Vec<Arc<str>>> {
+    pub fn get_parents(&self) -> &Adjacency {
         &self.parents
     }
 
