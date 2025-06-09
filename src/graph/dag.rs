@@ -2,17 +2,21 @@
 // HashMap используется для хранения списка смежности, а HashSet — для проверки циклов в DFS.
 use std::collections::{HashMap, HashSet};
 use std::fs; // Для чтения файла.
-use std::sync::{Arc, RwLock};
+use std::sync::{Arc};
 use serde::Deserialize; // Для десериализации JSON.
 use rayon::prelude::*; // Для параллельной обработки
 use rand::Rng; // Для генерации случайных чисел
+use serde_json::Value;
 use crate::graph::weights::{Node, NodeInfo, compute_weights, compute_descendants_with_depth_and_weight};
 use crate::Adjacency;
+use crate::DagDb;
+
 
 // Структура для десериализации JSON с генезис-транзакциями.
 #[derive(Deserialize)]
 struct GenesisTransaction {
     hash: String, // Хэш генезис-узла.
+    data: Value
 }
 
 
@@ -25,6 +29,7 @@ pub struct DAG {
     // Все узлы
     nodes: HashSet<Arc<str>>,
     weights: Vec<Node>,
+    data: HashMap<Arc<str>, Arc<Value>>,
     additions_since_last_weight_calc: usize,
 }
 
@@ -36,19 +41,21 @@ impl DAG {
             parents: HashMap::new(),
             nodes: HashSet::new(),
             weights: Vec::new(),
+            data: HashMap::new(),
             additions_since_last_weight_calc: 0,
         };
         let genesis_data = fs::read_to_string("genesis.json").map_err(|e| {
             eprintln!("Failed to read genesis.json: {}", e);
             e
         });
-        if let Ok(data) = genesis_data {
-            match serde_json::from_str::<Vec<GenesisTransaction>>(&data) {
+        if let Ok(d) = genesis_data {
+            match serde_json::from_str::<Vec<GenesisTransaction>>(&d) {
                 Ok(transactions) => {
                     // Итерируемся по ссылке на transactions, чтобы не перемещать вектор.
                     for tx in &transactions {
                         let hash = Arc::from(tx.hash.as_str());
-                        graph.add_node(hash);
+                        let data = Arc::new(tx.data.clone());
+                        graph.add_node(hash, data);
                         graph.calculate_weights();
                         
                     }
@@ -133,6 +140,10 @@ impl DAG {
         self.additions_since_last_weight_calc = 0;
     }
 
+    pub fn get_node_data(&self, node: &str) -> Option<&Value> {
+        self.data.get(node).map(|arc| arc.as_ref())
+    }
+
     /// Возвращает неизменяемую ссылку на список смежности графа.
     pub fn get_childrens(&self) -> &Adjacency {
         &self.childrens
@@ -181,7 +192,7 @@ impl DAG {
     ///   - Узел с таким хэшем уже существует ("Node already exists").
     ///   - Нет ни одного существующего родителя ("No existing parents").
     ///   - Добавление ребра создает цикл ("Cycle detected").
-    pub fn add_node_with_parents(&mut self, node: Arc<str>, parents: Vec<Arc<str>>) -> Result<(), String> {
+    pub fn add_node_with_parents(&mut self, node: Arc<str>, parents: Vec<Arc<str>>, data: Arc<Value>) -> Result<(), String> {
         // Проверяем, существует ли уже узел с таким хэшем в графе.
         // Это важно для предотвращения дублирования узлов и сохранения уникальности идентификаторов.
         if self.childrens.contains_key(&node) {
@@ -204,7 +215,7 @@ impl DAG {
 
         // Добавляем новый узел в граф с пустым списком дочерних узлов.
         // Используем clone(), так как node_hash будет использоваться дальше.
-        self.add_node(node.clone());
+        self.add_node(node.clone(), data);
 
         // Проходим по каждому существующему родителю и добавляем ребро от него к новому узлу.
         for parent in &existing_parents {
@@ -232,7 +243,7 @@ impl DAG {
     }
 
     /// Добавляет новый узел в граф без указания родителей.
-    fn add_node(&mut self, node: Arc<str>) {
+    fn add_node(&mut self, node: Arc<str>, data: Arc<Value>) {
         // Используем метод entry для доступа к записи в HashMap.
         // or_insert_with добавляет пустой вектор, если узла ещё нет, и ничего не делает, если узел уже существует.
         // [ ] Doooo
@@ -244,6 +255,7 @@ impl DAG {
         self.nodes.insert(node.clone());
         self.childrens.entry(node.clone()).or_insert_with(Vec::new); // TODO: разобраться как правильней сосдавать новый узел
         self.parents.entry(node.clone()).or_insert_with(Vec::new);
+        self.data.insert(node, data);
     }
 
     /// Добавляет направленное ребро от узла `from` к узлу `to`.
@@ -287,6 +299,7 @@ impl DAG {
             }
         }
         self.nodes.remove(&node);
+        self.data.remove(&node);
     }
 
     /// Удаляет список узлов из графа параллельно с использованием Rayon.
@@ -306,7 +319,7 @@ impl DAG {
     /// # Возвращает
     /// * `Ok(())` - Если все узлы успешно удалены.
     /// * `Err(String)` - Если хотя бы один узел не существует или не удалось получить блокировку.
-    pub fn remove_nodes(graph: Arc<RwLock<DAG>>, nodes: Vec<Arc<str>>) -> Result<(), String> {
+    pub fn remove_nodes(graph: DagDb, nodes: Vec<Arc<str>>) -> Result<(), String> {
         // Проверяем наличие всех узлов с блокировкой чтения
         {
             let graph_read = graph.read().map_err(|e| format!("Failed to lock graph for reading: {}", e))?;

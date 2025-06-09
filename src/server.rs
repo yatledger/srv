@@ -6,14 +6,15 @@ use axum::{
     Router, // Основной тип для маршрутизации запросов.
 };
 use serde::{Deserialize, Serialize}; // Для сериализации/десериализации JSON.
+use serde_json::Value;
 use std::collections::HashMap; // Для возврата графа в JSON.
-use std::sync::{Arc, RwLock}; // Для безопасного разделения графа между потоками.
+use std::sync::Arc; // Для безопасного разделения графа между потоками.
 use tokio::net::TcpListener; // Для запуска асинхронного TCP-сервера.
 use rand::seq::SliceRandom; // Для перемешивания финального списка узлов.
 use rand::rng; // Для генерации случайности.
 
 // Импортируем структуру DAG из вашего модуля graph.rs.
-use crate::graph::DAG;
+use crate::DagDb;
 
 // Определяем структуру для десериализации JSON-запроса.
 // Она соответствует данным, которые клиент отправляет в POST-запросе на /add_node.
@@ -21,6 +22,7 @@ use crate::graph::DAG;
 struct AddNodeRequest {
     hash: String, // Хэш нового узла.
     parents: Vec<String>, // Список хэшей родительских узлов.
+    data: Value,
 }
 
 // Определяем структуру для сериализации ответа клиенту.
@@ -48,7 +50,6 @@ struct PoolResponse {
 #[derive(Serialize)]
 struct NodeWeight {
     hash: String,
-    data: String, // Пока пустое
     weight: f64,
 }
 
@@ -94,8 +95,57 @@ struct RemoveResponse {
     message: Option<String>,
 }
 
+// Определяем асинхронный обработчик POST-запроса на /add_node.
+// Принимает JSON с данными запроса и состояние приложения (граф).
+async fn add_handler(
+    State(graph): State<DagDb>, // Извлекаем граф, защищённый Arc и RwLock для потокобезопасности.
+    Json(payload): Json<AddNodeRequest>, // Извлекаем JSON-данные из тела запроса.
+) -> (StatusCode, Json<AddNodeResponse>) {
+    // Получаем блокировку графа для безопасного доступа.
+    // RwLock обеспечивает синхронизацию между потоками.
+    // let start = std::time::Instant::now();
+    let mut graph = match graph.write() {
+        Ok(guard) => guard,
+        Err(_) => {
+            // Если не удалось получить блокировку, возвращаем ошибку сервера.
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(AddNodeResponse {
+                    status: "error".to_string(),
+                    message: Some("Failed to lock graph".to_string()),
+                }),
+            );
+        }
+    };
+    // let duration = start.elapsed(); // Вычисляем время выполнения.
+    // println!("add_node_handler took {} ms", duration.as_millis());
+    // Преобразуем String в Arc<str>
+    let hash = Arc::from(payload.hash.as_str());
+    let parents = payload.parents.into_iter().map(|s| Arc::from(s.as_str())).collect();
+    let data = Arc::new(payload.data);
+    // Вызываем метод add_node_with_parents на графе.
+    match graph.add_node_with_parents(hash, parents, data) {
+        Ok(()) => (
+            // Успешное добавление узла.
+            StatusCode::OK,
+            Json(AddNodeResponse {
+                status: "success".to_string(),
+                message: None,
+            }),
+        ),
+        Err(err) => (
+            // Ошибка при добавлении узла (например, узел уже существует или цикл).
+            StatusCode::BAD_REQUEST,
+            Json(AddNodeResponse {
+                status: "error".to_string(),
+                message: Some(err),
+            }),
+        ),
+    }
+}
+
 async fn pool_handler(
-    State(graph): State<Arc<RwLock<DAG>>>,
+    State(graph): State<DagDb>,
 ) -> (StatusCode, Json<PoolResponse>) {
     // Получаем блокировку графа для безопасного доступа.
     let graph = match graph.read() {
@@ -144,7 +194,7 @@ async fn pool_handler(
 }
 
 async fn get_childrens_handler(
-    State(graph): State<Arc<RwLock<DAG>>>,
+    State(graph): State<DagDb>,
 ) -> (StatusCode, Json<GraphResponse>) {
     // Получаем блокировку графа для безопасного доступа.
     let graph = match graph.read() {
@@ -176,7 +226,7 @@ async fn get_childrens_handler(
 }
 
 async fn get_parents_handler(
-    State(graph): State<Arc<RwLock<DAG>>>,
+    State(graph): State<DagDb>,
 ) -> (StatusCode, Json<GraphResponse>) {
     // Получаем блокировку графа для безопасного доступа.
     let graph = match graph.read() {
@@ -207,55 +257,7 @@ async fn get_parents_handler(
     )
 }
 
-// Определяем асинхронный обработчик POST-запроса на /add_node.
-// Принимает JSON с данными запроса и состояние приложения (граф).
-async fn add_node_handler(
-    State(graph): State<Arc<RwLock<DAG>>>, // Извлекаем граф, защищённый Arc и RwLock для потокобезопасности.
-    Json(payload): Json<AddNodeRequest>, // Извлекаем JSON-данные из тела запроса.
-) -> (StatusCode, Json<AddNodeResponse>) {
-    // Получаем блокировку графа для безопасного доступа.
-    // RwLock обеспечивает синхронизацию между потоками.
-    // let start = std::time::Instant::now();
-    let mut graph = match graph.write() {
-        Ok(guard) => guard,
-        Err(_) => {
-            // Если не удалось получить блокировку, возвращаем ошибку сервера.
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(AddNodeResponse {
-                    status: "error".to_string(),
-                    message: Some("Failed to lock graph".to_string()),
-                }),
-            );
-        }
-    };
-    // let duration = start.elapsed(); // Вычисляем время выполнения.
-    // println!("add_node_handler took {} ms", duration.as_millis());
-    // Преобразуем String в Arc<str>
-    let hash = Arc::from(payload.hash.as_str());
-    let parents = payload.parents.into_iter().map(|s| Arc::from(s.as_str())).collect();
-    // Вызываем метод add_node_with_parents на графе.
-    match graph.add_node_with_parents(hash, parents) {
-        Ok(()) => (
-            // Успешное добавление узла.
-            StatusCode::OK,
-            Json(AddNodeResponse {
-                status: "success".to_string(),
-                message: None,
-            }),
-        ),
-        Err(err) => (
-            // Ошибка при добавлении узла (например, узел уже существует или цикл).
-            StatusCode::BAD_REQUEST,
-            Json(AddNodeResponse {
-                status: "error".to_string(),
-                message: Some(err),
-            }),
-        ),
-    }
-}
-
-async fn get_weights_handler(State(graph): State<Arc<RwLock<DAG>>>) -> (StatusCode, Json<WeightsResponse>) {
+async fn get_weights_handler(State(graph): State<DagDb>) -> (StatusCode, Json<WeightsResponse>) {
     let graph = match graph.read() {
         Ok(guard) => guard,
         Err(_) => {
@@ -272,7 +274,6 @@ async fn get_weights_handler(State(graph): State<Arc<RwLock<DAG>>>) -> (StatusCo
     let weights = graph.get_weights();
     let nodes = weights.into_iter().map(|node| NodeWeight {
         hash: String::from(&*node.node),
-        data: String::new(),
         weight: node.weight,
     }).collect();
     (
@@ -286,7 +287,7 @@ async fn get_weights_handler(State(graph): State<Arc<RwLock<DAG>>>) -> (StatusCo
 }
 
 async fn get_full_graph_handler(
-    State(graph): State<Arc<RwLock<DAG>>>,
+    State(graph): State<DagDb>,
 ) -> (StatusCode, Json<FullGraphResponse>) {
     let graph = match graph.read() {
         Ok(guard) => guard,
@@ -348,7 +349,7 @@ async fn get_full_graph_handler(
 // Обработчик для POST-запроса на /remove.
 // Удаляет список узлов из графа.
 async fn remove_handler(
-    State(graph): State<Arc<RwLock<DAG>>>,
+    State(graph): State<DagDb>,
     Json(payload): Json<RemoveRequest>,
 ) -> (StatusCode, Json<RemoveResponse>) {
     // Получаем блокировку графа для записи.
@@ -394,7 +395,7 @@ async fn remove_handler(
 }
 
 // Функция для запуска HTTP-сервера.
-pub async fn start_server(graph: Arc<RwLock<DAG>>) -> Result<(), Box<dyn std::error::Error>> {
+pub async fn start_server(graph: DagDb) -> Result<(), Box<dyn std::error::Error>> {
     // Создаём новый граф и оборачиваем его в Arc<RwLock<_>> для потокобезопасного разделения.
     // Arc (Atomic Reference Counting) позволяет безопасно делить данные между потоками.
     // RwLock обеспечивает взаимоисключающий доступ к графу.
@@ -402,10 +403,10 @@ pub async fn start_server(graph: Arc<RwLock<DAG>>) -> Result<(), Box<dyn std::er
     // Создаём маршруты для Axum-сервера.
     // Определяем один POST-эндпоинт /add_node, который вызывает add_node_handler.
     let app = Router::new()
-        .route("/add", post(add_node_handler))
+        .route("/add", post(add_handler))
+        .route("/pool", get(pool_handler))
         .route("/childrens", get(get_childrens_handler))
         .route("/parents", get(get_parents_handler))
-        .route("/pool", get(pool_handler))
         .route("/weights", get(get_weights_handler))
         .route("/full", get(get_full_graph_handler))
         .route("/remove", post(remove_handler))
