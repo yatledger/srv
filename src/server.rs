@@ -119,12 +119,18 @@ async fn pool_handler(
 
     // Извлекаем только хэши узлов.
     let mut nodes: Vec<String> = nodes.into_iter().map(|node| node.node).collect();
-    // Вычисляем длину обрезанного списка как округлённый квадратный корень от числа узлов.
-    let target_len = (nodes.len() as f64).sqrt().ceil() as usize;
-    // Обрезаем список до target_len, если он длиннее.
-    nodes.truncate(target_len); // XXX + nodes.len() / 3
-    // Перемешиваем финальный список узлов для "стабильности".
-    nodes.shuffle(&mut rng());
+    // Выполняем обрезку и перемешивание только если nodes.len() > 10.
+    if nodes.len() > 10 {
+        // Обрезаем список до nodes.len() / 3.
+        let first_truncate_len = nodes.len() / 3;
+        nodes.truncate(first_truncate_len);
+        // Перемешиваем список узлов.
+        nodes.shuffle(&mut rng());
+        // Вычисляем длину обрезанного списка как округлённый квадратный корень от числа узлов.
+        let target_len = (nodes.len() as f64).sqrt().ceil() as usize;
+        // Обрезаем список до target_len, если он длиннее.
+        nodes.truncate(target_len);
+    }
 
     // Возвращаем ответ с обрезанным списком узлов.
     (
