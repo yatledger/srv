@@ -12,3 +12,5 @@ redis = { version = "0.32.0", features = ["tokio-comp", "connection-manager"] }
 serde = { version = "1.0", features = ["derive"] } # Для сериализации/десериализации JSON.
 serde_json = "1.0" # Для работы с JSON в graph.rs.
 tokio = { version = "1.0", features = ["full"] } # Асинхронный runtime.
+tracing = "0.1.41"
+tracing-subscriber = { version = "0.3.19", features = ["env-filter", "fmt"] }

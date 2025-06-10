@@ -8,6 +8,7 @@ use rand::Rng; // Для генерации случайных чисел
 use serde_json::Value;
 use crate::graph::weights::{Node, NodeInfo, compute_weights, compute_descendants_with_depth_and_weight};
 use crate::Adjacency;
+use tracing::{info, error, debug};
 
 
 // Структура для десериализации JSON с генезис-транзакциями.
@@ -43,7 +44,7 @@ impl DAG {
             additions_since_last_weight_calc: 0,
         };
         let genesis_data = fs::read_to_string("genesis.json").map_err(|e| {
-            eprintln!("Failed to read genesis.json: {}", e);
+            error!("Failed to read genesis.json: {}", e);
             e
         });
         if let Ok(d) = genesis_data {
@@ -57,10 +58,10 @@ impl DAG {
                         graph.calculate_weights();
                         
                     }
-                    println!("Loaded {} genesis transactions from genesis.json", transactions.len());
+                    info!("Loaded {} genesis transactions from genesis.json", transactions.len());
                 }
                 Err(e) => {
-                    eprintln!("Failed to parse genesis.json: {}", e);
+                    error!("Failed to parse genesis.json: {}", e);
                 }
             }
         }
@@ -133,7 +134,7 @@ impl DAG {
     }
 
     fn calculate_weights(&mut self) {
-        println!("Calculate weights for {} nodes", self.additions_since_last_weight_calc);
+        debug!("Calculate weights for {} nodes", self.additions_since_last_weight_calc);
         self.weights = compute_weights(&self.childrens, &self.nodes);
         self.additions_since_last_weight_calc = 0;
     }
@@ -328,11 +329,7 @@ impl DAG {
         self.additions_since_last_weight_calc += 1;
 
         // Вероятностный пересчет весов или пересчет по порогу
-        let mut rng = rand::rngs::ThreadRng::default();
-        let should_recalculate = rng.random::<f64>() < 0.1 || self.additions_since_last_weight_calc >= 10;
-        if should_recalculate {
-            self.calculate_weights();
-        }
+        self.calculate_weights();
         Ok(())
     }
 

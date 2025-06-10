@@ -12,6 +12,7 @@ use std::sync::Arc; // Для безопасного разделения гра
 use tokio::net::TcpListener; // Для запуска асинхронного TCP-сервера.
 use rand::seq::SliceRandom; // Для перемешивания финального списка узлов.
 use rand::rng; // Для генерации случайности.
+use tracing::{info, error, debug};
 
 // Импортируем структуру DAG из вашего модуля graph.rs.
 use crate::DagDb;
@@ -102,7 +103,7 @@ async fn add_handler(
     State(graph): State<DagDb>, // Извлекаем граф, защищённый Arc и RwLock для потокобезопасности.
     Json(payload): Json<AddNodeRequest>, // Извлекаем JSON-данные из тела запроса.
 ) -> (StatusCode, Json<AddNodeResponse>) {
-    println!("Starting add_handler for node: {}", payload.hash);
+    debug!("Starting add_handler for node: {}", payload.hash);
     // Получаем блокировку графа для безопасного доступа.
     // RwLock обеспечивает синхронизацию между потоками.
     // let start = std::time::Instant::now();
@@ -145,7 +146,7 @@ async fn add_handler(
         ),
     };
 
-    println!("Finished add_handler for node: {}, status: {}", payload.hash, result.1 .0.status);
+    debug!("Finished add_handler for node: {}, status: {}", payload.hash, result.1 .0.status);
     result
 }
 
@@ -243,7 +244,7 @@ async fn remove_handler(
     State(graph): State<DagDb>,
     Json(payload): Json<RemoveRequest>,
 ) -> (StatusCode, Json<RemoveResponse>) {
-    println!("Starting remove_handler for nodes: {:?}", payload.hashes);
+    debug!("Starting remove_handler for nodes: {:?}", payload.hashes);
     // Получаем блокировку графа для чтения
     let existing_nodes = {
         // Получаем блокировку для чтения в отдельном блоке
@@ -259,7 +260,7 @@ async fn remove_handler(
                 );
             }
         };
-        println!("1");
+        //debug!("1");
         
         // Фильтруем существующие узлы
         let nodes: Vec<Arc<str>> = payload
@@ -272,9 +273,8 @@ async fn remove_handler(
         nodes
         // Блокировка для чтения автоматически освобождается здесь
     };
-    
-    println!("2");
-    
+    //debug!("2");
+
     // Если нет существующих узлов, возвращаем ошибку
     if existing_nodes.is_empty() {
         return (
@@ -285,7 +285,8 @@ async fn remove_handler(
             }),
         );
     }
-    println!("3");
+    //debug!("3");
+
     let mut graph_write = match graph.write() {
         Ok(guard) => guard,
         Err(_) => {
@@ -298,7 +299,7 @@ async fn remove_handler(
             );
         }
     };
-    println!("4");
+    //debug!("4");
     // Пакетное удаление узлов
     let result = match graph_write.remove_nodes(existing_nodes) {
         Ok(()) => (
@@ -317,7 +318,7 @@ async fn remove_handler(
         ),
     };
 
-    println!("Finished remove_handler, status: {}", result.1 .0.status);
+    debug!("Finished remove_handler, status: {}", result.1 .0.status);
     result
 }
 
@@ -472,10 +473,10 @@ pub async fn start_server(graph: DagDb) -> Result<(), Box<dyn std::error::Error>
             match graph_for_task.read() {
                 Ok(graph) => {
                     let node_count = graph.get_node_count();
-                    println!("Current node count: {}", node_count);
+                    info!("Current node count: {}", node_count);
                 }
                 Err(e) => {
-                    eprintln!("Failed to lock graph for node count: {}", e);
+                    error!("Failed to lock graph for node count: {}", e);
                 }
             }
         }
@@ -484,7 +485,7 @@ pub async fn start_server(graph: DagDb) -> Result<(), Box<dyn std::error::Error>
     // Запускаем сервер на localhost:3000.
     // TcpListener создаёт асинхронный TCP-сокет для обработки входящих соединений.
     let listener = TcpListener::bind("0.0.0.0:3000").await?;
-    println!("Server running at http://127.0.0.1:3000");
+    info!("Server running at http://127.0.0.1:3000");
 
     // Запускаем Axum-сервер, который обрабатывает запросы.
     axum::serve(listener, app).await?;
