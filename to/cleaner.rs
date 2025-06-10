@@ -89,3 +89,9 @@ pub async fn start_cleaner(graph: DagDb) {
         }
     }
 }
+
+// Запускаем cleaner как фоновую задачу
+/*let cleaner_graph = Arc::clone(&graph);
+tokio::spawn(async move {
+    cleaner::start_cleaner(cleaner_graph).await;
+});*/

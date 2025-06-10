@@ -193,6 +193,83 @@ async fn pool_handler(
     )
 }
 
+async fn get_weights_handler(State(graph): State<DagDb>) -> (StatusCode, Json<WeightsResponse>) {
+    let graph = match graph.read() {
+        Ok(guard) => guard,
+        Err(_) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(WeightsResponse {
+                    status: "error".to_string(),
+                    nodes: vec![],
+                    message: Some("Failed to lock graph".to_string()),
+                }),
+            );
+        }
+    };
+    let weights = graph.get_weights();
+    let nodes = weights.into_iter().map(|node| NodeWeight {
+        hash: String::from(&*node.node),
+        weight: node.weight,
+    }).collect();
+    (
+        StatusCode::OK,
+        Json(WeightsResponse {
+            status: "success".to_string(),
+            nodes,
+            message: None,
+        }),
+    )
+}
+
+// Обработчик для POST-запроса на /remove.
+// Удаляет список узлов из графа.
+async fn remove_handler(
+    State(graph): State<DagDb>,
+    Json(payload): Json<RemoveRequest>,
+) -> (StatusCode, Json<RemoveResponse>) {
+    // Получаем блокировку графа для записи.
+    let mut graph = match graph.write() {
+        Ok(guard) => guard,
+        Err(_) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(RemoveResponse {
+                    status: "error".to_string(),
+                    message: Some("Failed to lock graph".to_string()),
+                }),
+            );
+        }
+    };
+
+    // Проверяем, существуют ли все узлы в графе.
+    for hash in &payload.hashes {
+        if !graph.contains_node(hash) {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(RemoveResponse {
+                    status: "error".to_string(),
+                    message: Some(format!("Node {} does not exist", hash)),
+                }),
+            );
+        }
+    }
+
+    // Удаляем каждый узел из списка.
+    for hash in payload.hashes {
+        graph.remove_node(Arc::from(hash.as_str()));
+    }
+
+    // Возвращаем успешный ответ.
+    (
+        StatusCode::OK,
+        Json(RemoveResponse {
+            status: "success".to_string(),
+            message: None,
+        }),
+    )
+}
+
 async fn get_childrens_handler(
     State(graph): State<DagDb>,
 ) -> (StatusCode, Json<GraphResponse>) {
@@ -257,35 +334,6 @@ async fn get_parents_handler(
     )
 }
 
-async fn get_weights_handler(State(graph): State<DagDb>) -> (StatusCode, Json<WeightsResponse>) {
-    let graph = match graph.read() {
-        Ok(guard) => guard,
-        Err(_) => {
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(WeightsResponse {
-                    status: "error".to_string(),
-                    nodes: vec![],
-                    message: Some("Failed to lock graph".to_string()),
-                }),
-            );
-        }
-    };
-    let weights = graph.get_weights();
-    let nodes = weights.into_iter().map(|node| NodeWeight {
-        hash: String::from(&*node.node),
-        weight: node.weight,
-    }).collect();
-    (
-        StatusCode::OK,
-        Json(WeightsResponse {
-            status: "success".to_string(),
-            nodes,
-            message: None,
-        }),
-    )
-}
-
 async fn get_full_graph_handler(
     State(graph): State<DagDb>,
 ) -> (StatusCode, Json<FullGraphResponse>) {
@@ -341,54 +389,6 @@ async fn get_full_graph_handler(
         Json(FullGraphResponse {
             status: "success".to_string(),
             nodes,
-            message: None,
-        }),
-    )
-}
-
-// Обработчик для POST-запроса на /remove.
-// Удаляет список узлов из графа.
-async fn remove_handler(
-    State(graph): State<DagDb>,
-    Json(payload): Json<RemoveRequest>,
-) -> (StatusCode, Json<RemoveResponse>) {
-    // Получаем блокировку графа для записи.
-    let mut graph = match graph.write() {
-        Ok(guard) => guard,
-        Err(_) => {
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(RemoveResponse {
-                    status: "error".to_string(),
-                    message: Some("Failed to lock graph".to_string()),
-                }),
-            );
-        }
-    };
-
-    // Проверяем, существуют ли все узлы в графе.
-    for hash in &payload.hashes {
-        if !graph.contains_node(hash) {
-            return (
-                StatusCode::BAD_REQUEST,
-                Json(RemoveResponse {
-                    status: "error".to_string(),
-                    message: Some(format!("Node {} does not exist", hash)),
-                }),
-            );
-        }
-    }
-
-    // Удаляем каждый узел из списка.
-    for hash in payload.hashes {
-        graph.remove_node(Arc::from(hash.as_str()));
-    }
-
-    // Возвращаем успешный ответ.
-    (
-        StatusCode::OK,
-        Json(RemoveResponse {
-            status: "success".to_string(),
             message: None,
         }),
     )
