@@ -51,6 +51,7 @@ struct PoolResponse {
 struct NodeWeight {
     hash: String,
     weight: f64,
+    data: Value,
 }
 
 #[derive(Serialize)]
@@ -101,6 +102,7 @@ async fn add_handler(
     State(graph): State<DagDb>, // Извлекаем граф, защищённый Arc и RwLock для потокобезопасности.
     Json(payload): Json<AddNodeRequest>, // Извлекаем JSON-данные из тела запроса.
 ) -> (StatusCode, Json<AddNodeResponse>) {
+    println!("Starting add_handler for node: {}", payload.hash);
     // Получаем блокировку графа для безопасного доступа.
     // RwLock обеспечивает синхронизацию между потоками.
     // let start = std::time::Instant::now();
@@ -124,7 +126,7 @@ async fn add_handler(
     let parents = payload.parents.into_iter().map(|s| Arc::from(s.as_str())).collect();
     let data = Arc::new(payload.data);
     // Вызываем метод add_node_with_parents на графе.
-    match graph.add_node_with_parents(hash, parents, data) {
+    let result = match graph.add_node_with_parents(hash, parents, data) {
         Ok(()) => (
             // Успешное добавление узла.
             StatusCode::OK,
@@ -141,7 +143,10 @@ async fn add_handler(
                 message: Some(err),
             }),
         ),
-    }
+    };
+
+    println!("Finished add_handler for node: {}, status: {}", payload.hash, result.1 .0.status);
+    result
 }
 
 async fn pool_handler(
@@ -208,10 +213,20 @@ async fn get_weights_handler(State(graph): State<DagDb>) -> (StatusCode, Json<We
         }
     };
     let weights = graph.get_weights();
-    let nodes = weights.into_iter().map(|node| NodeWeight {
-        hash: String::from(&*node.node),
-        weight: node.weight,
-    }).collect();
+    let nodes = weights
+        .into_iter()
+        .map(|node| {
+            let data = graph
+                .get_node_data(&node.node)
+                .cloned()
+                .unwrap_or(Value::Null);
+            NodeWeight {
+                hash: String::from(&*node.node),
+                weight: node.weight,
+                data,
+            }
+        })
+        .collect();
     (
         StatusCode::OK,
         Json(WeightsResponse {
@@ -223,51 +238,87 @@ async fn get_weights_handler(State(graph): State<DagDb>) -> (StatusCode, Json<We
 }
 
 // Обработчик для POST-запроса на /remove.
-// Удаляет список узлов из графа.
+// Пакетно даляет список узлов из графа.
 async fn remove_handler(
     State(graph): State<DagDb>,
     Json(payload): Json<RemoveRequest>,
 ) -> (StatusCode, Json<RemoveResponse>) {
-    // Получаем блокировку графа для записи.
-    let mut graph = match graph.write() {
+    println!("Starting remove_handler for nodes: {:?}", payload.hashes);
+    // Получаем блокировку графа для чтения
+    let existing_nodes = {
+        // Получаем блокировку для чтения в отдельном блоке
+        let graph_read = match graph.read() {
+            Ok(guard) => guard,
+            Err(_) => {
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(RemoveResponse {
+                        status: "error".to_string(),
+                        message: Some("Failed to lock graph".to_string()),
+                    }),
+                );
+            }
+        };
+        println!("1");
+        
+        // Фильтруем существующие узлы
+        let nodes: Vec<Arc<str>> = payload
+            .hashes
+            .into_iter()
+            .filter(|hash| graph_read.contains_node(hash))
+            .map(|hash| Arc::from(hash.as_str()))
+            .collect();
+        
+        nodes
+        // Блокировка для чтения автоматически освобождается здесь
+    };
+    
+    println!("2");
+    
+    // Если нет существующих узлов, возвращаем ошибку
+    if existing_nodes.is_empty() {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(RemoveResponse {
+                status: "error".to_string(),
+                message: Some("No existing nodes provided".to_string()),
+            }),
+        );
+    }
+    println!("3");
+    let mut graph_write = match graph.write() {
         Ok(guard) => guard,
         Err(_) => {
             return (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 Json(RemoveResponse {
                     status: "error".to_string(),
-                    message: Some("Failed to lock graph".to_string()),
+                    message: Some("Failed to lock graph for writing".to_string()),
                 }),
             );
         }
     };
+    println!("4");
+    // Пакетное удаление узлов
+    let result = match graph_write.remove_nodes(existing_nodes) {
+        Ok(()) => (
+            StatusCode::OK,
+            Json(RemoveResponse {
+                status: "success".to_string(),
+                message: None,
+            }),
+        ),
+        Err(err) => (
+            StatusCode::BAD_REQUEST,
+            Json(RemoveResponse {
+                status: "error".to_string(),
+                message: Some(err),
+            }),
+        ),
+    };
 
-    // Проверяем, существуют ли все узлы в графе.
-    for hash in &payload.hashes {
-        if !graph.contains_node(hash) {
-            return (
-                StatusCode::BAD_REQUEST,
-                Json(RemoveResponse {
-                    status: "error".to_string(),
-                    message: Some(format!("Node {} does not exist", hash)),
-                }),
-            );
-        }
-    }
-
-    // Удаляем каждый узел из списка.
-    for hash in payload.hashes {
-        graph.remove_node(Arc::from(hash.as_str()));
-    }
-
-    // Возвращаем успешный ответ.
-    (
-        StatusCode::OK,
-        Json(RemoveResponse {
-            status: "success".to_string(),
-            message: None,
-        }),
-    )
+    println!("Finished remove_handler, status: {}", result.1 .0.status);
+    result
 }
 
 async fn get_childrens_handler(
@@ -405,12 +456,30 @@ pub async fn start_server(graph: DagDb) -> Result<(), Box<dyn std::error::Error>
     let app = Router::new()
         .route("/add", post(add_handler))
         .route("/pool", get(pool_handler))
+        .route("/weights", get(get_weights_handler))
+        .route("/remove", post(remove_handler))
         .route("/childrens", get(get_childrens_handler))
         .route("/parents", get(get_parents_handler))
-        .route("/weights", get(get_weights_handler))
         .route("/full", get(get_full_graph_handler))
-        .route("/remove", post(remove_handler))
-        .with_state(graph); // Передаём граф как состояние приложения.
+        .with_state(graph.clone()); // Передаём граф как состояние приложения.
+
+    // Создаём фоновую задачу для вывода количества узлов каждую секунду
+    let graph_for_task = graph.clone();
+    tokio::spawn(async move {
+        let mut interval = tokio::time::interval(tokio::time::Duration::from_secs(1));
+        loop {
+            interval.tick().await; // Ждём следующего тика (1 секунда)
+            match graph_for_task.read() {
+                Ok(graph) => {
+                    let node_count = graph.get_node_count();
+                    println!("Current node count: {}", node_count);
+                }
+                Err(e) => {
+                    eprintln!("Failed to lock graph for node count: {}", e);
+                }
+            }
+        }
+    });
 
     // Запускаем сервер на localhost:3000.
     // TcpListener создаёт асинхронный TCP-сокет для обработки входящих соединений.

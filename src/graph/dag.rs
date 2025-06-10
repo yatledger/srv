@@ -4,12 +4,10 @@ use std::collections::{HashMap, HashSet};
 use std::fs; // Для чтения файла.
 use std::sync::{Arc};
 use serde::Deserialize; // Для десериализации JSON.
-use rayon::prelude::*; // Для параллельной обработки
 use rand::Rng; // Для генерации случайных чисел
 use serde_json::Value;
 use crate::graph::weights::{Node, NodeInfo, compute_weights, compute_descendants_with_depth_and_weight};
 use crate::Adjacency;
-use crate::DagDb;
 
 
 // Структура для десериализации JSON с генезис-транзакциями.
@@ -135,8 +133,8 @@ impl DAG {
     }
 
     fn calculate_weights(&mut self) {
+        println!("Calculate weights for {} nodes", self.additions_since_last_weight_calc);
         self.weights = compute_weights(&self.childrens, &self.nodes);
-        // println!("Calculate weights for {} nodes", self.additions_since_last_weight_calc);
         self.additions_since_last_weight_calc = 0;
     }
 
@@ -319,34 +317,22 @@ impl DAG {
     /// # Возвращает
     /// * `Ok(())` - Если все узлы успешно удалены.
     /// * `Err(String)` - Если хотя бы один узел не существует или не удалось получить блокировку.
-    pub fn remove_nodes(graph: DagDb, nodes: Vec<Arc<str>>) -> Result<(), String> {
-        // Проверяем наличие всех узлов с блокировкой чтения
-        {
-            let graph_read = graph.read().map_err(|e| format!("Failed to lock graph for reading: {}", e))?;
-            for node in &nodes {
-                if !graph_read.contains_node(node) {
-                    return Err(format!("Node {} does not exist", node));
-                }
+    pub fn remove_nodes(&mut self, nodes: Vec<Arc<str>>) -> Result<(), String> {
+        for node in nodes {
+            if self.contains_node(&node) {
+                self.remove_node(node);
             }
         }
 
-        // Параллельно удаляем узлы
-        nodes.par_iter().for_each(|node| {
-            let mut graph_write = match graph.write() {
-                Ok(guard) => guard,
-                Err(e) => {
-                    eprintln!("Failed to lock graph for writing: {}", e);
-                    return;
-                }
-            };
-            if graph_write.contains_node(node) {
-                graph_write.remove_node(node.clone());
-            }
-        });
+        // Увеличиваем счетчик добавлений
+        self.additions_since_last_weight_calc += 1;
 
-        // Пересчитываем веса однократно
-        let mut graph_write = graph.write().map_err(|e| format!("Failed to lock graph for writing: {}", e))?;
-        graph_write.calculate_weights();
+        // Вероятностный пересчет весов или пересчет по порогу
+        let mut rng = rand::rngs::ThreadRng::default();
+        let should_recalculate = rng.random::<f64>() < 0.1 || self.additions_since_last_weight_calc >= 10;
+        if should_recalculate {
+            self.calculate_weights();
+        }
         Ok(())
     }
 
