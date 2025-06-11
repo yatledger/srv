@@ -194,9 +194,14 @@ impl DAG {
     pub fn add_node_with_parents(&mut self, node: Arc<str>, parents: Vec<Arc<str>>, data: Arc<Value>) -> Result<(), String> {
         // Проверяем, существует ли уже узел с таким хэшем в графе.
         // Это важно для предотвращения дублирования узлов и сохранения уникальности идентификаторов.
-        if self.childrens.contains_key(&node) {
+        if self.contains_node(&node) {
+            info!("Node already exists");
             return Err("Node already exists".to_string()); // Возвращаем ошибку, если узел уже есть.
         }
+
+        // Добавляем новый узел в граф с пустым списком дочерних узлов.
+        // Используем clone(), так как node_hash будет использоваться дальше.
+        self.add_node(node.clone(), data);
 
         // Фильтруем список родителей, оставляя только те узлы, которые уже существуют в графе.
         // Используем into_iter() для владения значениями из вектора parents и collect для создания нового вектора.
@@ -208,25 +213,19 @@ impl DAG {
         // Если после фильтрации не осталось ни одного существующего родителя,
         // добавление узла невозможно, так как он должен быть связан хотя бы с одним узлом.
         // TODO: 2 parents!
-        if existing_parents.is_empty() {
-            return Err("No existing parents".to_string()); // Ошибка: нет родителей для связи.
-        }
+        if !existing_parents.is_empty() {
+            // Проходим по каждому существующему родителю и добавляем ребро от него к новому узлу.
+            for parent in &existing_parents {
+                self.add_edge(parent.clone(), node.clone());
 
-        // Добавляем новый узел в граф с пустым списком дочерних узлов.
-        // Используем clone(), так как node_hash будет использоваться дальше.
-        self.add_node(node.clone(), data);
-
-        // Проходим по каждому существующему родителю и добавляем ребро от него к новому узлу.
-        for parent in &existing_parents {
-            self.add_edge(parent.clone(), node.clone());
-
-            // После добавления ребра проверяем, не образовался ли цикл в графе.
-            /*if self.has_cycle() {
-                // Если цикл обнаружен, откатываем изменения:
-                self.remove_edge(parent.clone(), node_hash.clone()); // Удаляем только что добавленное ребро.
-                self.remove_node(node_hash.clone()); // Удаляем сам узел из графа.
-                return Err("Cycle detected".to_string()); // Возвращаем ошибку о цикле.
-            }*/
+                // После добавления ребра проверяем, не образовался ли цикл в графе.
+                /*if self.has_cycle() {
+                    // Если цикл обнаружен, откатываем изменения:
+                    self.remove_edge(parent.clone(), node_hash.clone()); // Удаляем только что добавленное ребро.
+                    self.remove_node(node_hash.clone()); // Удаляем сам узел из графа.
+                    return Err("Cycle detected".to_string()); // Возвращаем ошибку о цикле.
+                }*/
+            }
         }
 
         // Увеличиваем счетчик добавлений
