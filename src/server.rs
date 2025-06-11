@@ -111,6 +111,7 @@ async fn add_handler(
         Ok(guard) => guard,
         Err(_) => {
             // Если не удалось получить блокировку, возвращаем ошибку сервера.
+            error!("Failed to lock graph");
             return (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 Json(AddNodeResponse {
@@ -465,7 +466,7 @@ pub async fn start_server(graph: DagDb) -> Result<(), Box<dyn std::error::Error>
         .with_state(graph.clone()); // Передаём граф как состояние приложения.
 
     // Создаём фоновую задачу для вывода количества узлов каждую секунду
-    let graph_for_task = graph.clone();
+    /*let graph_for_task = graph.clone();
     tokio::spawn(async move {
         let mut interval = tokio::time::interval(tokio::time::Duration::from_secs(1));
         loop {
@@ -480,7 +481,7 @@ pub async fn start_server(graph: DagDb) -> Result<(), Box<dyn std::error::Error>
                 }
             }
         }
-    });
+    });*/
 
     // Запускаем сервер на localhost:3000.
     // TcpListener создаёт асинхронный TCP-сокет для обработки входящих соединений.
