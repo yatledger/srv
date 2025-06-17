@@ -6,9 +6,9 @@ use std::sync::{Arc};
 use serde::Deserialize; // Для десериализации JSON.
 use rand::Rng; // Для генерации случайных чисел
 use serde_json::Value;
-use crate::graph::weights::{Node, NodeInfo, compute_weights, compute_descendants_with_depth_and_weight};
+use crate::graph::weights::{NodeWeight, NodeInfo, compute_weights, compute_descendants_with_depth_and_weight};
 use crate::Adjacency;
-use tracing::{info, error, debug};
+use tracing::{info, error};
 
 
 // Структура для десериализации JSON с генезис-транзакциями.
@@ -18,53 +18,53 @@ struct GenesisTransaction {
     data: Value
 }
 
+pub struct Node {
+    pub parents: HashSet<Arc<str>>,
+    pub children: HashSet<Arc<str>>,
+    pub data: Arc<Value>,
+    pub weight: f64,
+}
 
 
 pub struct DAG {
-    // Граф: узел -> список детей
-    childrens: Adjacency,
-    // Обратный граф: узел -> список родителей  
-    parents: Adjacency,
-    // Все узлы
-    nodes: HashSet<Arc<str>>,
-    weights: Vec<Node>,
-    data: HashMap<Arc<str>, Arc<Value>>,
+    nodes: HashMap<Arc<str>, Node>,
     additions_since_last_weight_calc: usize,
 }
 
 
 impl DAG {
     pub fn new() -> Self {
-        let mut graph = DAG {
-            childrens: HashMap::new(),
-            parents: HashMap::new(),
-            nodes: HashSet::new(),
-            weights: Vec::new(),
-            data: HashMap::new(),
+        let mut dag = DAG {
+            nodes: HashMap::new(),
             additions_since_last_weight_calc: 0,
         };
-        let genesis_data = fs::read_to_string("genesis.json").map_err(|e| {
-            error!("Failed to read genesis.json: {}", e);
-            e
-        });
-        if let Ok(d) = genesis_data {
-            match serde_json::from_str::<Vec<GenesisTransaction>>(&d) {
+        // Загрузка генезис-транзакций
+        if let Ok(genesis_content) = fs::read_to_string("genesis.json") {
+            match serde_json::from_str::<Vec<GenesisTransaction>>(&genesis_content) {
                 Ok(transactions) => {
-                    // Итерируемся по ссылке на transactions, чтобы не перемещать вектор.
                     for tx in &transactions {
                         let hash = Arc::from(tx.hash.as_str());
                         let data = Arc::new(tx.data.clone());
-                        graph.add_node(hash, data);
-                        graph.calculate_weights();
                         
+                        // NEW: Создаем полноценный GraphNode для генезис-узла.
+                        let genesis_node = Node {
+                            parents: HashSet::new(),
+                            children: HashSet::new(),
+                            data,
+                            weight: 0.0, // Вес будет рассчитан ниже
+                        };
+                        dag.nodes.insert(hash, genesis_node);
                     }
+                    // Рассчитываем веса после загрузки всех генезис-узлов.
+                    dag.calculate_weights();
                     info!("Loaded {} genesis transactions from genesis.json", transactions.len());
                 }
-                Err(e) => {
-                    error!("Failed to parse genesis.json: {}", e);
-                }
+                Err(e) => error!("Failed to parse genesis.json: {}", e),
             }
+        } else {
+             error!("Could not read genesis.json, starting with an empty graph.");
         }
+
         // Добавляем тестовые данные
         // Узлы C, D с родителем A
         /*graph.add_node("A".to_string());
@@ -130,103 +130,94 @@ impl DAG {
         // Узел Z с родителем X
         let _ = graph.add_node_with_parents("Z".to_string(), vec!["X".to_string()]);*/
 
-        graph
+        dag
     }
 
+    // REFACTORED: Логика пересчета весов.
     fn calculate_weights(&mut self) {
-        debug!("Calculate weights for {} nodes", self.additions_since_last_weight_calc);
-        self.weights = compute_weights(&self.childrens, &self.nodes);
+        // Передаем текущие узлы в модуль расчета весов.
+        let weights_map = compute_weights(&self.nodes);
+        
+        // Обновляем вес для каждого узла в графе.
+        for (hash, node) in self.nodes.iter_mut() {
+            node.weight = *weights_map.get(hash).unwrap_or(&0.0);
+        }
+
         self.additions_since_last_weight_calc = 0;
     }
 
+    // REFACTORED: Получение данных узла из новой структуры.
     pub fn get_node_data(&self, node: &str) -> Option<&Value> {
-        self.data.get(node).map(|arc| arc.as_ref())
+        self.nodes.get(node).map(|n| n.data.as_ref())
     }
 
-    /// Возвращает неизменяемую ссылку на список смежности графа.
-    pub fn get_childrens(&self) -> &Adjacency {
-        &self.childrens
+    // REFACTORED: Метод теперь "на лету" собирает список смежности детей.
+    pub fn get_childrens(&self) -> Adjacency {
+        self.nodes
+            .iter()
+            .map(|(hash, node)| (hash.clone(), node.children.iter().cloned().collect()))
+            .collect()
+    }
+    
+    // REFACTORED: Метод теперь "на лету" собирает список смежности родителей.
+    pub fn get_parents(&self) -> Adjacency {
+        self.nodes
+            .iter()
+            .map(|(hash, node)| (hash.clone(), node.parents.iter().cloned().collect()))
+            .collect()
     }
 
-    pub fn get_parents(&self) -> &Adjacency {
-        &self.parents
+    // REFACTORED: Метод теперь "на лету" собирает веса всех узлов.
+    pub fn get_weights(&self) -> Vec<NodeWeight> {
+        self.nodes
+            .iter()
+            .map(|(hash, node)| NodeWeight {
+                node: hash.clone(),
+                weight: node.weight,
+            })
+            .collect()
     }
 
-    pub fn get_weights(&self) -> &Vec<Node> {
-        &self.weights
+    // REFACTORED: Возвращает `true`, если узел существует в `nodes`.
+    pub fn contains_node(&self, node: &str) -> bool {
+        self.nodes.contains_key(node)
     }
 
-    pub fn get_nodes(&self) -> &HashSet<Arc<str>> {
-        &self.nodes
-    }
-
+    // REFACTORED: Возвращает количество узлов.
     pub fn get_node_count(&self) -> usize {
         self.nodes.len()
     }
 
-    pub fn contains_node(&self, node: &str) -> bool {
-        self.nodes.contains(node)
-    }
-
-    /// Добавляет новый узел в граф с указанными родителями и создает ребра от родителей к этому узлу.
-    /// Этот метод является ключевой функцией для построения графа, так как он одновременно добавляет узел
-    /// и устанавливает связи с уже существующими узлами (родителями).
-    /// 
-    /// Логика работы метода:
-    /// 1. Проверяется, существует ли уже узел с таким хэшем в графе. Если да — возвращается ошибка.
-    /// 2. Фильтруются переданные родители: остаются только те, которые уже есть в графе.
-    /// 3. Если ни один родитель не существует, метод завершается с ошибкой, так как узел не может быть "孤立" (изолированным).
-    /// 4. Новый узел добавляется в граф с пустым списком детей.
-    /// 5. Для каждого существующего родителя создается ребро от родителя к новому узлу.
-    /// 6. После каждого добавления ребра проверяется наличие цикла в графе с помощью метода has_cycle().
-    /// 7. Если цикл обнаружен, все изменения откатываются (ребро и узел удаляются), и возвращается ошибка.
-    /// 
-    /// # Аргументы
-    /// * `node_hash` — Хэш нового узла (String), уникальный идентификатор, который добавляется в граф.
-    /// * `parents` — Вектор хэшей (Vec<String>) узлов-родителей, от которых будут вести ребра к новому узлу.
-    /// 
-    /// # Возвращает
-    /// * `Ok(())` — Если узел и все ребра успешно добавлены в граф без создания цикла.
-    /// * `Err(String)` — Ошибка с текстовым описанием, если:
-    ///   - Узел с таким хэшем уже существует ("Node already exists").
-    ///   - Нет ни одного существующего родителя ("No existing parents").
-    ///   - Добавление ребра создает цикл ("Cycle detected").
     pub fn add_node_with_parents(&mut self, node: Arc<str>, parents: Vec<Arc<str>>, data: Arc<Value>) -> Result<(), String> {
-        // Проверяем, существует ли уже узел с таким хэшем в графе.
-        // Это важно для предотвращения дублирования узлов и сохранения уникальности идентификаторов.
-        if self.contains_node(&node) {
-            info!("Node already exists");
-            return Err("Node already exists".to_string()); // Возвращаем ошибку, если узел уже есть.
+        if self.nodes.contains_key(&node) {
+            return Err("Node already exists".to_string());
         }
-
-        // Добавляем новый узел в граф с пустым списком дочерних узлов.
-        // Используем clone(), так как node_hash будет использоваться дальше.
-        self.add_node(node.clone(), data);
 
         // Фильтруем список родителей, оставляя только те узлы, которые уже существуют в графе.
         // Используем into_iter() для владения значениями из вектора parents и collect для создания нового вектора.
         let existing_parents = parents
             .into_iter()
-            .filter(|p| self.childrens.contains_key(p)) // Проверяем наличие каждого родителя в adj_list.
-            .collect::<Vec<_>>();
+            .filter(|p| self.nodes.contains_key(p))
+            .collect::<HashSet<_>>();
 
-        // Если после фильтрации не осталось ни одного существующего родителя,
-        // добавление узла невозможно, так как он должен быть связан хотя бы с одним узлом.
         // TODO: 2 parents!
         if !existing_parents.is_empty() {
             // Проходим по каждому существующему родителю и добавляем ребро от него к новому узлу.
-            for parent in &existing_parents {
-                self.add_edge(parent.clone(), node.clone());
-
-                // После добавления ребра проверяем, не образовался ли цикл в графе.
-                /*if self.has_cycle() {
-                    // Если цикл обнаружен, откатываем изменения:
-                    self.remove_edge(parent.clone(), node_hash.clone()); // Удаляем только что добавленное ребро.
-                    self.remove_node(node_hash.clone()); // Удаляем сам узел из графа.
-                    return Err("Cycle detected".to_string()); // Возвращаем ошибку о цикле.
-                }*/
+            for parent_hash in &existing_parents {
+                if let Some(parent_node) = self.nodes.get_mut(parent_hash) {
+                    parent_node.children.insert(node.clone());
+                }
             }
         }
+
+        // Создаем и вставляем новый узел
+        let new_node = Node {
+            parents: existing_parents,
+            children: HashSet::new(),
+            data,
+            weight: 0.0, // Вес будет пересчитан позже
+        };
+        self.nodes.insert(node, new_node);
 
         // Увеличиваем счетчик добавлений
         self.additions_since_last_weight_calc += 1;
@@ -240,64 +231,22 @@ impl DAG {
         Ok(())
     }
 
-    /// Добавляет новый узел в граф без указания родителей.
-    fn add_node(&mut self, node: Arc<str>, data: Arc<Value>) {
-        // Используем метод entry для доступа к записи в HashMap.
-        // or_insert_with добавляет пустой вектор, если узла ещё нет, и ничего не делает, если узел уже существует.
-        // [ ] Doooo
-        // [x] Done
-        // HACK: hack
-        // BUG: bug
-        // XXX: xxx
-        // FIXME: fix
-        self.nodes.insert(node.clone());
-        self.childrens.entry(node.clone()).or_insert_with(Vec::new); // TODO: разобраться как правильней сосдавать новый узел
-        self.parents.entry(node.clone()).or_insert_with(Vec::new);
-        self.data.insert(node, data);
-    }
-
-    /// Добавляет направленное ребро от узла `from` к узлу `to`.
-    fn add_edge(&mut self, from: Arc<str>, to: Arc<str>) {
-        // Используем entry для доступа к записи узла `from` в HashMap.
-        // and_modify изменяет существующий вектор дочерних узлов, добавляя `to`.
-        // or_insert_with создает новый вектор с `to`, если узла `from` ещё нет.
-        self.childrens.entry(from.clone()).and_modify(|edges| edges.push(to.clone())).or_insert_with(|| vec![to.clone()]);
-        self.parents.entry(to.clone()).and_modify(|edges| edges.push(from.clone())).or_insert_with(|| vec![from]);
-    }
-
-    /// Удаляет ребро от узла `from` к узлу `to`.
-    /*fn remove_edge(&mut self, from: String, to: String) {
-        if let Some(edges) = self.adj_list.get_mut(&from) {
-            edges.retain(|e| e != &to);
-        }
-        if let Some(edges) = self.reverse_adj_list.get_mut(&to) {
-            edges.retain(|e| e != &from);
-        }
-    }*/
-
-    /// Удаляет узел из графа и все ребра, которые ведут к нему.
-    /// Удаляет узел из графа и все связанные с ним рёбра.
-    /// 
-    /// # Аргументы
-    /// * `node` - Хэш узла для удаления.
-    /// * `sync` - Если Some(true), пересчитывает веса графа после удаления; если Some(false) или None, веса не пересчитываются.
     pub fn remove_node(&mut self, node: Arc<str>) {
-        if let Some(children) = self.childrens.remove(&node) {
-            for child in &children {
-                if let Some(parents) = self.parents.get_mut(child) {
-                    parents.retain(|p| p != &node);
+        if let Some(removed_node) = self.nodes.remove(&node) {
+            // Удаляем ссылку на удаленный узел у его родителей
+            for parent_hash in &removed_node.parents {
+                if let Some(parent_node) = self.nodes.get_mut(parent_hash) {
+                    parent_node.children.remove(&node);
                 }
             }
-        }
-        if let Some(parents) = self.parents.remove(&node) {
-            for parent in &parents {
-                if let Some(children) = self.childrens.get_mut(parent) {
-                    children.retain(|c| c != &node);
+            // Удаляем ссылку на удаленный узел у его детей
+            for child_hash in &removed_node.children {
+                if let Some(child_node) = self.nodes.get_mut(child_hash) {
+                    child_node.parents.remove(&node);
                 }
             }
         }
         self.nodes.remove(&node);
-        self.data.remove(&node);
     }
 
     /// Удаляет список узлов из графа параллельно с использованием Rayon.
@@ -333,9 +282,7 @@ impl DAG {
     }
 
     pub fn compute_descendants_with_depth_and_weight(&self) -> HashMap<Arc<str>, Vec<NodeInfo>> {
-        compute_descendants_with_depth_and_weight(
-            &self.childrens,
-            &self.nodes
-        )
+        let node_keys: HashSet<Arc<str>> = self.nodes.keys().cloned().collect();
+        compute_descendants_with_depth_and_weight(&self.nodes, &node_keys)
     }
 }
