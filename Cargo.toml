@@ -6,6 +6,7 @@ edition = "2024"
 [dependencies]
 axum = "0.7" # Фреймворк для создания HTTP-сервера.
 num_cpus = "1.17.0"
+openraft = "0.9.19"
 rand = "0.9.1"
 rayon = "1.10.0"
 redis = { version = "0.32.0", features = ["tokio-comp", "connection-manager"] }

@@ -1,6 +1,7 @@
 pub mod graph;
 pub mod server;
 pub mod cleaner;
+pub mod updater;
 
 use std::collections::HashMap;
 use std::sync::{Arc, RwLock};

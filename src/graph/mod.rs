@@ -1,4 +1,4 @@
-mod dag;
-mod weights;
+pub mod dag;
+pub mod weights;
 
 pub use dag::DAG;

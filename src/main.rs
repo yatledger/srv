@@ -4,6 +4,7 @@ use dagdb::graph::DAG; // Для создания графа
 use tracing::info;
 use tracing_subscriber;
 use dagdb::cleaner;
+use dagdb::updater;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -23,6 +24,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let cleaner_graph = Arc::clone(&graph);
     tokio::spawn(async move {
         cleaner::start_cleaner(cleaner_graph).await;
+    });
+
+    let updater_graph = Arc::clone(&graph);
+    tokio::spawn(async move {
+        updater::start_weight_updater(updater_graph).await;
     });
 
     // Запускаем сервер

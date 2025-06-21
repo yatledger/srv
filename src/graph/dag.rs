@@ -4,9 +4,8 @@ use std::collections::{HashMap, HashSet};
 use std::fs; // Для чтения файла.
 use std::sync::{Arc};
 use serde::Deserialize; // Для десериализации JSON.
-use rand::Rng; // Для генерации случайных чисел
 use serde_json::Value;
-use crate::graph::weights::{NodeWeight, NodeInfo, compute_weights, compute_descendants_with_depth_and_weight};
+use crate::graph::weights::{NodeWeight, NodeInfo, compute_descendants_with_depth_and_weight};
 use crate::Adjacency;
 use tracing::{info, error};
 
@@ -28,7 +27,6 @@ pub struct Node {
 
 pub struct DAG {
     nodes: HashMap<Arc<str>, Node>,
-    additions_since_last_weight_calc: usize,
 }
 
 
@@ -36,7 +34,6 @@ impl DAG {
     pub fn new() -> Self {
         let mut dag = DAG {
             nodes: HashMap::new(),
-            additions_since_last_weight_calc: 0,
         };
         // Загрузка генезис-транзакций
         if let Ok(genesis_content) = fs::read_to_string("genesis.json") {
@@ -55,8 +52,6 @@ impl DAG {
                         };
                         dag.nodes.insert(hash, genesis_node);
                     }
-                    // Рассчитываем веса после загрузки всех генезис-узлов.
-                    dag.calculate_weights();
                     info!("Loaded {} genesis transactions from genesis.json", transactions.len());
                 }
                 Err(e) => error!("Failed to parse genesis.json: {}", e),
@@ -133,25 +128,26 @@ impl DAG {
         dag
     }
 
-    // REFACTORED: Логика пересчета весов.
-    fn calculate_weights(&mut self) {
-        // Передаем текущие узлы в модуль расчета весов.
-        let weights_map = compute_weights(&self.nodes);
-        
-        // Обновляем вес для каждого узла в графе.
-        for (hash, node) in self.nodes.iter_mut() {
-            node.weight = *weights_map.get(hash).unwrap_or(&0.0);
-        }
-
-        self.additions_since_last_weight_calc = 0;
-    }
-
-    // REFACTORED: Получение данных узла из новой структуры.
+    // Получение данных узла из новой структуры.
     pub fn get_node_data(&self, node: &str) -> Option<&Value> {
         self.nodes.get(node).map(|n| n.data.as_ref())
     }
 
-    // REFACTORED: Метод теперь "на лету" собирает список смежности детей.
+    pub fn get_node_keys(&self) -> Vec<Arc<str>> {
+        self.nodes.keys().cloned().collect()
+    }
+
+    /// Возвращает иммутабельную ссылку на таблицу узлов.
+    pub fn get_nodes(&self) -> &HashMap<Arc<str>, Node> {
+        &self.nodes
+    }
+
+    /// Возвращает мутабельную ссылку на узел по ключу, если он существует.
+    pub fn get_node_mut(&mut self, key: &Arc<str>) -> Option<&mut Node> {
+        self.nodes.get_mut(key)
+    }
+
+    // Метод теперь "на лету" собирает список смежности детей.
     pub fn get_childrens(&self) -> Adjacency {
         self.nodes
             .iter()
@@ -159,7 +155,7 @@ impl DAG {
             .collect()
     }
     
-    // REFACTORED: Метод теперь "на лету" собирает список смежности родителей.
+    // Метод теперь "на лету" собирает список смежности родителей.
     pub fn get_parents(&self) -> Adjacency {
         self.nodes
             .iter()
@@ -167,7 +163,7 @@ impl DAG {
             .collect()
     }
 
-    // REFACTORED: Метод теперь "на лету" собирает веса всех узлов.
+    // Метод теперь "на лету" собирает веса всех узлов.
     pub fn get_weights(&self) -> Vec<NodeWeight> {
         self.nodes
             .iter()
@@ -178,12 +174,12 @@ impl DAG {
             .collect()
     }
 
-    // REFACTORED: Возвращает `true`, если узел существует в `nodes`.
+    // Возвращает `true`, если узел существует в `nodes`.
     pub fn contains_node(&self, node: &str) -> bool {
         self.nodes.contains_key(node)
     }
 
-    // REFACTORED: Возвращает количество узлов.
+    // Возвращает количество узлов.
     pub fn get_node_count(&self) -> usize {
         self.nodes.len()
     }
@@ -219,15 +215,6 @@ impl DAG {
         };
         self.nodes.insert(node, new_node);
 
-        // Увеличиваем счетчик добавлений
-        self.additions_since_last_weight_calc += 1;
-
-        // Вероятностный пересчет весов или пересчет по порогу
-        let mut rng = rand::rngs::ThreadRng::default();
-        let should_recalculate = rng.random::<f64>() < 0.1 || self.additions_since_last_weight_calc >= 10;
-        if should_recalculate {
-            self.calculate_weights();
-        }
         Ok(())
     }
 
@@ -272,12 +259,6 @@ impl DAG {
                 self.remove_node(node);
             }
         }
-
-        // Увеличиваем счетчик добавлений
-        self.additions_since_last_weight_calc += 1;
-
-        // Вероятностный пересчет весов или пересчет по порогу
-        self.calculate_weights();
         Ok(())
     }
 
