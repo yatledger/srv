@@ -15,3 +15,8 @@ serde_json = "1.0" # Для работы с JSON в graph.rs.
 tokio = { version = "1.0", features = ["full"] } # Асинхронный runtime.
 tracing = "0.1.41"
 tracing-subscriber = { version = "0.3.19", features = ["env-filter", "fmt"] }
+anyhow = "1.0"    # Для удобной обработки ошибок
+async-trait = "0.1.88"
+chrono = "0.4"
+openraft-memstore = "0.9.20"
+reqwest = "0.12.20"
