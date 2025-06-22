@@ -5,7 +5,7 @@ use serde_json::Value;
 
 // Команды, которые будут отправляться через Raft для управления DAG
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub enum ClientRequest {
+pub enum Request {
     // Добавление узла с хэшом, родителями и данными
     Add {
         hash: Arc<str>,
@@ -25,8 +25,7 @@ pub enum ClientRequest {
 // impl openraft::AppData for ClientRequest {}
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
-pub enum ClientResponse {
-    Ok,
-    Err(String),
+pub struct Response {
+    pub value: Option<String>,
 }
 //impl openraft::AppDataResponse for ClientResponse {}

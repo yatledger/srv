@@ -20,7 +20,7 @@ struct GenesisTransaction {
     data: Value
 }
 
-#[derive(Debug, Serialize, Deserialize, Clone, Default)]
+#[derive(Debug, Clone, Default)]
 pub struct Node {
     pub parents: HashSet<Arc<str>>,
     pub children: HashSet<Arc<str>>,
@@ -28,12 +28,12 @@ pub struct Node {
     pub weight: f64,
 }
 
-#[derive(Debug, Serialize, Deserialize, Clone, Default)]
+#[derive(Debug, Clone)]
 pub struct DAG {
     nodes: HashMap<Arc<str>, Node>,
 }
 
-/*
+
 // Реализация Serialize для Node
 impl Serialize for Node {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
@@ -153,7 +153,7 @@ impl<'de> Deserialize<'de> for DAG {
         deserializer.deserialize_struct("DAG", &["nodes"], DAGVisitor)
     }
 }
-*/
+
 
 impl DAG {
     pub fn new() -> Self {
@@ -390,5 +390,11 @@ impl DAG {
     pub fn compute_descendants_with_depth_and_weight(&self) -> HashMap<Arc<str>, Vec<NodeInfo>> {
         let node_keys: HashSet<Arc<str>> = self.nodes.keys().cloned().collect();
         compute_descendants_with_depth_and_weight(&self.nodes, &node_keys)
+    }
+}
+
+impl Default for DAG {
+    fn default() -> Self {
+        Self::new()
     }
 }
