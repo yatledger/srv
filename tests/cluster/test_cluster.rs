@@ -4,7 +4,7 @@ use std::panic::PanicHookInfo;
 use std::time::Duration;
 
 use openraft::BasicNode;
-use dagdb::new_raft;
+use dagdb::start_raft;
 use dagdb::router::Router;
 use dagdb::command::Request;
 use dagdb::typ;
@@ -61,8 +61,8 @@ async fn test_cluster() {
 
     let local = LocalSet::new();
 
-    let (raft1, app1) = new_raft(1, router.clone()).await;
-    let (raft2, app2) = new_raft(2, router.clone()).await;
+    let (raft1, app1) = start_raft(1, router.clone()).await;
+    let (raft2, app2) = start_raft(2, router.clone()).await;
 
     let rafts = [raft1, raft2];
 

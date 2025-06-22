@@ -99,7 +99,7 @@ pub use log::LogStore;
 pub type Adjacency = HashMap<Arc<str>, Vec<Arc<str>>>;
 pub type DagDb = Arc<RwLock<DAG>>;
 
-pub async fn new_raft(node_id: NodeId, router: Router) -> (typ::Raft, App) {
+pub async fn start_raft(node_id: NodeId, http_addr: String) -> (typ::Raft, App) {
     // Create a configuration for the raft instance.
     let config = Config {
         heartbeat_interval: 500,
@@ -118,13 +118,14 @@ pub async fn new_raft(node_id: NodeId, router: Router) -> (typ::Raft, App) {
 
     // Create a instance of where the state machine data will be stored.
     let state_machine_store = Arc::new(StateMachineStore::default());
+    let router = Router::default();
 
     // Create a local raft instance.
     let raft = openraft::Raft::new(node_id, config, router.clone(), log_store, state_machine_store.clone())
         .await
         .unwrap();
 
-    let app = App::new(node_id, raft.clone(), router, state_machine_store);
+    let app = App::new(node_id, http_addr.clone(), raft.clone(), router, state_machine_store);
 
     (raft, app)
 }

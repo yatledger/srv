@@ -1,5 +1,5 @@
 //! This mod implements a network API for raft node.
-
+use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::collections::BTreeSet;
 
@@ -11,6 +11,14 @@ use crate::decode;
 use crate::encode;
 use crate::typ::*;
 use crate::NodeId;
+
+#[derive(Debug, Deserialize, Serialize)]
+pub struct AddLearnerRequest {
+    #[serde(rename = "0")]
+    id: NodeId,
+    #[serde(rename = "1")]
+    address: String,
+}
 
 pub async fn write(app: &mut App, req: String) -> String {
     let res = app.raft.client_write(decode(&req)).await;
@@ -67,10 +75,9 @@ pub async fn snapshot(app: &mut App, req: String) -> String {
 /// A Learner receives log replication from the leader but does not vote.
 /// This should be done before adding a node as a member into the cluster
 /// (by calling `change-membership`)
-pub async fn add_learner(app: &mut App, req: String) -> String {
-    let node_id: NodeId = decode(&req);
-    let node = BasicNode { addr: "".to_string() };
-    let res = app.raft.add_learner(node_id, node, true).await;
+pub async fn add_learner(app: &mut App, req: AddLearnerRequest) -> String {
+    let node = BasicNode { addr: req.address };
+    let res = app.raft.add_learner(req.id, node, true).await;
     encode(res)
 }
 

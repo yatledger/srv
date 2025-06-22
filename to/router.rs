@@ -5,7 +5,7 @@ use reqwest::Client;
 use openraft::error::Unreachable;
 use serde::Serialize;
 use serde::de::DeserializeOwned;
-use tracing::{debug, info, error};
+use tracing::{debug, error};
 
 use crate::encode;
 use crate::decode;
@@ -18,12 +18,12 @@ pub struct Router {
     /// HTTP-клиент для отправки запросов.
     client: Client,
     /// Карта адресов узлов, например, {1: "http://localhost:8080"}.
-    pub targets: BTreeMap<NodeId, String>
+    pub targets: Arc<Mutex<BTreeMap<NodeId, String>>>
 }
 
 impl Router {
     /// Создаёт новый маршрутизатор с указанными адресами узлов.
-    pub fn new(targets: BTreeMap<NodeId, String>) -> Self {
+    pub fn new(targets: Arc<Mutex<BTreeMap<NodeId, String>>>) -> Self {
         Router {
             client: Client::new(),
             targets,
@@ -46,7 +46,7 @@ impl Router {
 
         // Формируем полный URL, например, "http://localhost:8080/raft/append".
         let url = format!("{}/{}", addr.trim_end_matches('/'), path.trim_start_matches('/'));
-        info!("Sending request to {}: {}", url, encode(&req));
+        debug!("Sending request to {}: {}", url, encode(&req));
 
         // Кодируем запрос в строку.
         let encoded_req = encode(req);

@@ -4,10 +4,22 @@ use tracing::info;
 use tracing_subscriber;
 
 use dagdb::server;
-use dagdb::new_raft;
+use dagdb::start_raft;
 use dagdb::cleaner;
 use dagdb::updater;
 use dagdb::router::Router;
+
+use clap::Parser;
+
+#[derive(Parser, Clone, Debug)]
+#[clap(author, version, about, long_about = None)]
+pub struct Opt {
+    #[clap(long)]
+    pub id: u64,
+
+    #[clap(long)]
+    pub http_addr: String,
+}
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -21,7 +33,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Логируем запуск приложения
     info!("Starting the DAG server");
-    // Создаём граф и оборачиваем его в Arc<RwLock>
+    
+    let options = Opt::parse();
+    let (_raft, app) = start_raft(options.id, options.http_addr.clone()).await;
+
+    /*// Создаём граф и оборачиваем его в Arc<RwLock>
     let graph = Arc::new(RwLock::new(DAG::new()));
 
     let cleaner_graph = Arc::clone(&graph);
@@ -32,13 +48,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let updater_graph = Arc::clone(&graph);
     tokio::spawn(async move {
         updater::start_weight_updater(updater_graph).await;
-    });
+    });*/
 
     // Запускаем сервер
-    server::start_server(graph).await?;
-
-    let router = Router::default();
-    new_raft(1, router.clone()).await;
+    server::start_server(app, options.http_addr).await?;
 
     info!("Server shutdown");
     Ok(())
