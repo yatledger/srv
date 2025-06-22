@@ -1,54 +1,34 @@
 use std::sync::Arc;
-
-use tokio::sync::mpsc;
-use tokio::sync::oneshot;
+use axum::{routing::post, Router as AxumRouter};
+use tracing::info;
 
 use crate::api;
 use crate::router::Router;
 use crate::typ;
 use crate::NodeId;
 use crate::StateMachineStore;
+use tokio::net::TcpListener;
 
-pub type Path = String;
-pub type Payload = String;
-pub type ResponseTx = oneshot::Sender<String>;
-pub type RequestTx = mpsc::UnboundedSender<(Path, Payload, ResponseTx)>;
+use tracing::{error};
 
 /// Representation of an application state.
 pub struct App {
     pub id: NodeId,
     pub raft: typ::Raft,
-
-    /// Receive application requests, Raft protocol request or management requests.
-    pub rx: mpsc::UnboundedReceiver<(Path, Payload, ResponseTx)>,
     pub router: Router,
-
     pub state_machine: Arc<StateMachineStore>,
 }
 
 impl App {
     pub fn new(id: NodeId, raft: typ::Raft, router: Router, state_machine: Arc<StateMachineStore>) -> Self {
-        let (tx, rx) = mpsc::unbounded_channel();
-
-        {
-            let mut targets = router.targets.lock().unwrap();
-            targets.insert(id, tx);
-        }
-
         Self {
             id,
             raft,
-            rx,
             router,
             state_machine,
         }
     }
-
-    pub async fn run(mut self) -> Option<()> {
-        loop {
-            let (path, payload, response_tx) = self.rx.recv().await?;
-
-            let res = match path.as_str() {
+let res = match path.as_str() {
                 // Application API
                 "/app/write" => api::write(&mut self, payload).await,
                 "/app/read" => api::read(&mut self, payload).await,
@@ -66,8 +46,48 @@ impl App {
 
                 _ => panic!("unknown path: {}", path),
             };
+    /// Запускает HTTP-сервер для обработки клиентских и Raft-запросов
+    pub async fn start(self: Arc<Self>, addr: &str) -> Result<(), Box<dyn std::error::Error>>{
+        let app = self.clone();
+        let axum_router = AxumRouter::new()
+            .route("/app/write", post(move |body: String| async move {
+                api::write(&mut app.as_ref(), body).await
+            }))
+            .route("/app/read", post(move |body: String| async move {
+                api::read(&mut app.as_ref(), body).await
+            }))
+            .route("/raft/append", post(move |body: String| async move {
+                api::append(&mut app.as_ref(), body).await
+            }))
+            .route("/raft/snapshot", post(move |body: String| async move {
+                api::snapshot(&mut app.as_ref(), body).await
+            }))
+            .route("/raft/vote", post(move |body: String| async move {
+                api::vote(&mut app.as_ref(), body).await
+            }))
+            .route("/mng/add-learner", post(move |body: String| async move {
+                api::add_learner(&mut app.as_ref(), body).await
+            }))
+            .route("/mng/change-membership", post(move |body: String| async move {
+                api::change_membership(&mut app.as_ref(), body).await
+            }))
+            .route("/mng/init", post(move |body: String| async move {
+                api::init(&mut app.as_ref()).await
+            }))
+            .route("/mng/metrics", post(move |body: String| async move {
+                api::metrics(&mut app.as_ref()).await
+            }));
 
-            response_tx.send(res).unwrap();
-        }
+        let addr: String = addr.parse().map_err(|e| {
+            error!("Invalid address: {}", e);
+            e
+        }).expect("Invalid address");
+        info!("Starting HTTP server on {}", addr);
+        let listener = TcpListener::bind(&addr).await?;
+
+        // Запускаем Axum-сервер, который обрабатывает запросы.
+        axum::serve(listener, axum_router).await?;
+
+        Ok(())
     }
 }

@@ -1,10 +1,13 @@
-use dagdb::server;
-use std::sync::{Arc, RwLock}; // Для передачи графа в cleaner
-use dagdb::graph::DAG; // Для создания графа
+use dagdb::graph::DAG;
+use std::sync::{Arc, RwLock};
 use tracing::info;
 use tracing_subscriber;
+
+use dagdb::server;
+use dagdb::new_raft;
 use dagdb::cleaner;
 use dagdb::updater;
+use dagdb::router::Router;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -33,6 +36,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Запускаем сервер
     server::start_server(graph).await?;
+
+    let router = Router::default();
+    new_raft(1, router.clone()).await;
+
     info!("Server shutdown");
     Ok(())
 }

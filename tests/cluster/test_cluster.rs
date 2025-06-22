@@ -94,7 +94,7 @@ async fn run_test(rafts: &[typ::Raft], router: Router) {
 
     println!("=== write 2 logs");
     {
-        let hash = <Arc<str>>::from("1cace26889072316f109df9229011ceb35015b19e31c5d5e533cf6ed5c684e0d908de464c646ac626c262c7769f89d9c137458a124813472668e4189fbb7e758");
+        let hash = <Arc<str>>::from("1cace26889072316f109df9229011ceb35015b19e31c5d5e533cf6ed5c684e0d908de464c646ac626c262c7769f89d9c137458a12481347266");
 
         // Создаём parents как Vec<Arc<str>>
         let parents: Vec<Arc<str>> = vec![]; // В JSON parents пустой массив, поэтому пустой вектор
@@ -106,12 +106,12 @@ async fn run_test(rafts: &[typ::Raft], router: Router) {
             "debit": "Hm4GGGtBGiLzHoVSTvXqz5JoV9JXqJWiYrZvXp6GCy4L",
             "amount": 500000000,
             "uniq": "",
-            "msg": "genesis",
+            "msg": "хуй",
             "sign": "",
             "time": 174961
         }));
 
-        let hash2 = <Arc<str>>::from("bb4041d38e1c807185465a653ba8b93ab5b072874b3433ab714a56038f6eefd2344b0c653555a66780843b7db7f4115c5ffb0da85fc2b954146e14426ba4eb92");
+        let hash2 = <Arc<str>>::from("bb4041d38e1c807185465a653ba8b93ab5b072874b3433ab714a56038f6eefd2344b0c653555a66780843b7db7f4115c5ffb0da85fc2b95414");
 
         // Создаём parents как Vec<Arc<str>>
         let parents2: Vec<Arc<str>> = vec![
@@ -126,7 +126,7 @@ async fn run_test(rafts: &[typ::Raft], router: Router) {
             "debit": "RvCcJWKYpoEXGm6N72kDj3dA8zTxGTMSBpCLSKcJvdR",
             "amount": 3300000,
             "uniq": "",
-            "msg": "genesis2",
+            "msg": "в жопе",
             "sign": "",
             "time": 174961
         }));

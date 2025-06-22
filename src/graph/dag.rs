@@ -313,7 +313,7 @@ impl DAG {
         if self.nodes.contains_key(&node) {
             return Err("Node already exists".to_string());
         }
-
+        // TODO: 2 parents!
         // Фильтруем список родителей, оставляя только те узлы, которые уже существуют в графе.
         // Используем into_iter() для владения значениями из вектора parents и collect для создания нового вектора.
         let existing_parents = parents
@@ -321,7 +321,7 @@ impl DAG {
             .filter(|p| self.nodes.contains_key(p))
             .collect::<HashSet<_>>();
 
-        // TODO: 2 parents!
+        
         if !existing_parents.is_empty() {
             // Проходим по каждому существующему родителю и добавляем ребро от него к новому узлу.
             for parent_hash in &existing_parents {

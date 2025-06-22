@@ -1,46 +1,81 @@
 use std::collections::BTreeMap;
-use std::sync::Arc;
-use std::sync::Mutex;
-
+use reqwest::Client;
 use openraft::error::Unreachable;
-use tokio::sync::oneshot;
+use serde::Serialize;
+use serde::de::DeserializeOwned;
+use tracing::{debug, error};
 
-use crate::app::RequestTx;
-use crate::decode;
 use crate::encode;
+use crate::decode;
 use crate::typ::RaftError;
 use crate::NodeId;
 
-/// Simulate a network router.
-#[derive(Debug, Clone)]
-#[derive(Default)]
+/// Симулирует сетевой маршрутизатор, отправляя HTTP-запросы между узлами Raft.
+#[derive(Debug, Clone, Default)]
 pub struct Router {
-    pub targets: Arc<Mutex<BTreeMap<NodeId, RequestTx>>>,
+    /// HTTP-клиент для отправки запросов.
+    client: Client,
+    /// Карта адресов узлов, например, {1: "http://localhost:8080"}.
+    node_addresses: BTreeMap<NodeId, String>,
 }
 
 impl Router {
-    /// Send request `Req` to target node `to`, and wait for response `Result<Resp, RaftError<E>>`.
-    pub async fn send<Req, Resp>(&self, to: NodeId, path: &str, req: Req) -> Result<Resp, Unreachable>
-    where
-        Req: serde::Serialize,
-        Result<Resp, RaftError>: serde::de::DeserializeOwned,
-    {
-        let (resp_tx, resp_rx) = oneshot::channel();
-
-        let encoded_req = encode(req);
-        tracing::debug!("send to: {}, {}, {}", to, path, encoded_req);
-
-        {
-            let mut targets = self.targets.lock().unwrap();
-            let tx = targets.get_mut(&to).unwrap();
-
-            tx.send((path.to_string(), encoded_req, resp_tx)).unwrap();
+    /// Создаёт новый маршрутизатор с указанными адресами узлов.
+    pub fn new(node_addresses: BTreeMap<NodeId, String>) -> Self {
+        Router {
+            client: Client::new(),
+            node_addresses,
         }
+    }
 
-        let resp_str = resp_rx.await.unwrap();
-        tracing::debug!("resp from: {}, {}, {}", to, path, resp_str);
+    /// Отправляет запрос `Req` на узел `to` по пути `path` и ждёт ответ `Result<Resp, RaftError>`.
+    pub async fn send<Req, Resp>(
+        &self,
+        to: NodeId,
+        path: &str,
+        req: Req,
+    ) -> Result<Resp, Unreachable>
+    where
+        Req: Serialize,
+        Result<Resp, RaftError>: DeserializeOwned,
+    {
+        // Получаем адрес целевого узла (например, "http://localhost:8080").
+        let addr = self.node_addresses.get(&to).expect("Node not found");
 
-        let res = decode::<Result<Resp, RaftError>>(&resp_str);
-        res.map_err(|e| Unreachable::new(&e))
+        // Формируем полный URL, например, "http://localhost:8080/raft/append".
+        let url = format!("{}/{}", addr.trim_end_matches('/'), path.trim_start_matches('/'));
+        debug!("Sending request to {}: {}", url, encode(&req));
+
+        // Кодируем запрос в строку.
+        let encoded_req = encode(req);
+
+        // Отправляем HTTP POST-запрос.
+        let response = self.client
+            .post(&url)
+            .body(encoded_req)
+            .send()
+            .await
+            .map_err(|e| {
+                error!("Failed to send request to {}: {}", url, e);
+                Unreachable::new(&e)
+            })?;
+
+        // Получаем тело ответа как строку.
+        let resp_str = response
+            .text()
+            .await
+            .map_err(|e| {
+                error!("Failed to read response from {}: {}", url, e);
+                Unreachable::new(&e)
+            })?;
+
+        debug!("Received response from {}: {}", url, resp_str);
+
+        // Декодируем ответ в Result<Resp, RaftError>.
+        decode::<Result<Resp, RaftError>>(&resp_str)
+            .map_err(|e| {
+                error!("Failed to decode response from {}: {}", url, e);
+                Unreachable::new(&e)
+            })
     }
 }
