@@ -41,6 +41,7 @@ async fn add_learner(
     State(app): State<App>,
     Json(req): Json<(NodeId, String)>,
 ) -> Result<Json<impl serde::Serialize>, StatusCode> {
+    info!("{} {}", req.0, req.1);
     let node_id = req.0;
     let node = BasicNode { addr: req.1 };
     
@@ -51,7 +52,6 @@ async fn add_learner(
 }
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::convert::Infallible;
 
 async fn change_membership(
     State(app): State<App>,
@@ -64,16 +64,25 @@ async fn change_membership(
 
 async fn init(
     State(app): State<App>,
-    Json(req): Json<Vec<(NodeId, String)>>,
+    body: String,
 ) -> Result<Json<impl serde::Serialize>, StatusCode> {
     let mut nodes = BTreeMap::new();
-    if req.is_empty() {
+    
+    // Пытаемся распарсить, если не получается или пусто - используем дефолт
+    let node_list: Vec<(NodeId, String)> = if body.trim().is_empty() {
+        Vec::new()
+    } else {
+        serde_json::from_str(&body).map_err(|_| StatusCode::BAD_REQUEST)?
+    };
+    
+    if node_list.is_empty() {
         nodes.insert(app.id, BasicNode { addr: app.addr.clone() });
     } else {
-        for (id, addr) in req.into_iter() {
+        for (id, addr) in node_list.into_iter() {
             nodes.insert(id, BasicNode { addr });
         }
     };
+    
     let res = app.raft.initialize(nodes).await.decompose()
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     Ok(Json(res))
@@ -268,16 +277,16 @@ async fn pool_handler(
 
 pub async fn start_server(app: App, http_addr: String) -> Result<(), Box<dyn std::error::Error>> {
     let srv = Router::new()
-        .route("/change-membership", post(change_membership))
-        .route("/init", post(init))
-        .route("/metrics", get(metrics))
+        .route("/add", post(add_handler))
+        .route("/pool", get(pool_handler))
         .route("/write", post(write))
-        .route("/vote", post(vote))
-        .route("/append", post(append))
-        .route("/snapshot", post(snapshot))
+        .route("/raft/vote", post(vote))
+        .route("/raft/append", post(append))
+        .route("/raft/snapshot", post(snapshot))
+        .route("/mng/change-membership", post(change_membership))
         .route("/mng/add-learner", post(add_learner))
-        .route("/mng/init", post(unified_handler))
-        .route("/mng/metrics", post(unified_handler))
+        .route("/mng/init", post(init))
+        .route("/mng/metrics", post(metrics))
         .with_state(app.clone()); // Передаём граф как состояние приложения.
 
     // TcpListener создаёт асинхронный TCP-сокет для обработки входящих соединений.

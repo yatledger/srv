@@ -14,15 +14,17 @@ use crate::TypeConfig;
 
 pub struct Connection {
     router: Router,
+    addr: String,
     target: NodeId,
 }
 
 impl RaftNetworkFactory<TypeConfig> for Router {
     type Network = Connection;
 
-    async fn new_client(&mut self, target: NodeId, _node: &BasicNode) -> Self::Network {
+    async fn new_client(&mut self, target: NodeId, node: &BasicNode) -> Self::Network {
         Connection {
             router: self.clone(),
+            addr: node.addr.clone(),
             target,
         }
     }
@@ -34,7 +36,7 @@ impl RaftNetworkV2<TypeConfig> for Connection {
         req: AppendEntriesRequest,
         _option: RPCOption,
     ) -> Result<AppendEntriesResponse, RPCError> {
-        let resp = self.router.send(self.target, "/raft/append", req).await?;
+        let resp = self.router.send(self.target, &self.addr, "/raft/append", req).await?;
         Ok(resp)
     }
 
@@ -46,12 +48,12 @@ impl RaftNetworkV2<TypeConfig> for Connection {
         _cancel: impl Future<Output = ReplicationClosed> + OptionalSend + 'static,
         _option: RPCOption,
     ) -> Result<SnapshotResponse, StreamingError> {
-        let resp = self.router.send(self.target, "/raft/snapshot", (vote, snapshot.meta, snapshot.snapshot)).await?;
+        let resp = self.router.send(self.target, &self.addr, "/raft/snapshot", (vote, snapshot.meta, snapshot.snapshot)).await?;
         Ok(resp)
     }
 
     async fn vote(&mut self, req: VoteRequest, _option: RPCOption) -> Result<VoteResponse, RPCError> {
-        let resp = self.router.send(self.target, "/raft/vote", req).await?;
+        let resp = self.router.send(self.target, &self.addr, "/raft/vote", req).await?;
         Ok(resp)
     }
 }
