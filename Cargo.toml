@@ -16,3 +16,4 @@ tokio = { version = "1.0", features = ["full"] } # Асинхронный runtim
 tracing = "0.1.41"
 tracing-subscriber = { version = "0.3.19", features = ["env-filter", "fmt"] }
 reqwest = "0.12.20"
+actix-web = "4.11.0"

@@ -81,6 +81,9 @@ pub fn decode<T: serde::de::DeserializeOwned>(s: &str) -> T {
     serde_json::from_str(s).unwrap()
 }
 
+#[cfg(test)]
+mod test;
+
 pub mod command;  // Новый модуль для команд и ответов
 pub mod app;
 pub mod store;

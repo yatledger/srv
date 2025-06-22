@@ -22,7 +22,15 @@ pub enum Request {
         weight: f64,
     },
 }
-// impl openraft::AppData for ClientRequest {}
+impl Request {
+    pub fn add(hash: Arc<str>, parents: Vec<Arc<str>>, data: Arc<Value>) -> Self {
+        Self::Add {
+            hash,
+            parents,
+            data,
+        }
+    }
+}
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Response {
