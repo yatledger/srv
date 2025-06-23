@@ -16,7 +16,6 @@ tokio = { version = "1.0", features = ["full"] } # Асинхронный runtim
 tracing = "0.1.41"
 tracing-subscriber = { version = "0.3.19", features = ["env-filter", "fmt"] }
 reqwest = { version = "0.12.20", features = ["json"] }
-actix-web = "4.11.0"
 axum-macros = "0.5.0"
 clap = "4.5.40"
-anyhow = "1.0.98"
+#anyhow = "1.0.98" кастомные ошибки

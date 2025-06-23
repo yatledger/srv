@@ -33,7 +33,7 @@ pub struct StateMachineData {
     pub last_membership: StoredMembership,
 
     /// Application data.
-    pub dag: DAG,
+    pub data: DAG,
 }
 
 /// Defines a state machine for the Raft cluster. This state machine represents a copy of the
@@ -121,15 +121,15 @@ impl RaftStateMachine<TypeConfig> for Arc<StateMachineStore> {
                 EntryPayload::Blank => res.push(Response { value: None }),
                 EntryPayload::Normal(ref req) => match req {
                     Request::Add { hash, parents, data } => {
-                        let _result = sm.dag.add_node_with_parents(hash.clone(), parents.clone(), data.clone());
+                        let _result = sm.data.add_node_with_parents(hash.clone(), parents.clone(), data.clone());
                         res.push(Response { value: Some("Ok".to_string()) });
                     }
                     Request::Remove { hash } => {
-                        sm.dag.remove_node(hash.clone());
+                        sm.data.remove_node(hash.clone());
                         res.push(Response { value: None });
                     }
                     Request::Weight { hash, weight } => {
-                        if let Some(node) = sm.dag.get_node_mut(&hash) {
+                        if let Some(node) = sm.data.get_node_mut(&hash) {
                             node.weight = *weight;
                         }
                         res.push(Response { value: None });

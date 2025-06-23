@@ -7,7 +7,6 @@ use crate::command::{Request, Response};
 use openraft::Config;
 
 use crate::app::App;
-use crate::router::Router;
 use crate::store::StateMachineData;
 
 use std::collections::HashMap;

@@ -40,3 +40,11 @@ curl -i -H "Content-Type: application/json" \
      -d '' \
      http://127.0.0.1:21003/raft/snapshot
 
+
+curl -i -H "Content-Type: application/json" \
+     -d '{
+            "hash": "f70a1248d-3455-4387777c-8d42-b4af200fca35",
+            "parents": [],
+            "data": {}
+}' \
+     http://127.0.0.1:21002/add

@@ -3,7 +3,7 @@ use reqwest::Client;
 use openraft::error::Unreachable;
 use serde::Serialize;
 use serde::de::DeserializeOwned;
-use tracing::{debug, info, error};
+use tracing::{info, error};
 
 //use anyhow::Error;
 use crate::decode;

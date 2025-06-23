@@ -35,7 +35,7 @@ pub async fn read(app: &mut App, req: String) -> String {
             linearizer.await_ready(&app.raft).await.unwrap();
 
             let state_machine = app.state_machine.state_machine.lock().unwrap();
-            let value = state_machine.dag.get_node_data(&key).cloned();
+            let value = state_machine.data.get_node_data(&key).cloned();
 
             let res: Result<String, RaftError<CheckIsLeaderError>> = Ok(value.map(|v| serde_json::to_string(&v).unwrap_or_default()).unwrap_or_default());
             res

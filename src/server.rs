@@ -16,7 +16,6 @@ use rand::rng;
 
 use crate::command::{Request};
 
-use openraft::ReadPolicy;
 use crate::api;
 
 use crate::app::{App};
@@ -224,29 +223,8 @@ async fn add_handler(
 async fn pool_handler(
     State(app): State<App>,
 ) -> (StatusCode, Json<PoolResponse>) {
-    let ret = app.raft.get_read_linearizer(ReadPolicy::ReadIndex).await;
-    let mut nodes = vec![];
-    match ret {
-        Ok(linearizer) => {
-            linearizer.await_ready(&app.raft).await.unwrap();
-
-            let state_machine = app.state_machine.state_machine.lock().unwrap();
-            nodes = state_machine.dag.get_weights().clone();
-            
-        }
-        Err(e) => {
-            // Другие ошибки Raft
-            tracing::error!("Unexpected Raft error: {}", e);
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(PoolResponse {
-                    status: "error".to_string(),
-                    nodes: vec![],
-                    message: Some(format!("Raft error: {}", e)),
-                }),
-            )
-        }
-    };
+    let state_machine = app.state_machine.state_machine.lock().unwrap();
+    let mut nodes = state_machine.data.get_weights().clone();
     nodes.sort_by(|a, b| a.weight.partial_cmp(&b.weight).unwrap_or(std::cmp::Ordering::Equal));
 
     // Извлекаем только хэши узлов.
