@@ -3,7 +3,6 @@ use axum::{
     http::StatusCode,
     routing::{post, get},
     Router,
-    body::Bytes,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -15,8 +14,6 @@ use rand::seq::SliceRandom;
 use rand::rng;
 
 use crate::command::{Request};
-
-use crate::api;
 
 use crate::app::{App};
 use crate::NodeId;
@@ -137,34 +134,6 @@ async fn snapshot(
     Ok(Json(res))
 }
 
-#[axum_macros::debug_handler]
-pub async fn unified_handler(
-    State(mut app): State<App>,
-    axum::extract::OriginalUri(uri): axum::extract::OriginalUri,
-    body: Bytes,
-) -> StatusCode {
-    let path = uri.path().to_string();
-    let payload = String::from_utf8_lossy(&body).to_string();
-    info!("GET {} with {}", path.clone(), payload.clone());
-
-    match path.as_str() {
-        "/app/write" => api::write(&mut app, payload).await,
-        "/app/read" => api::read(&mut app, payload).await,
-
-        "/raft/append" => api::append(&mut app, payload).await,
-        "/raft/snapshot" => api::snapshot(&mut app, payload).await,
-        "/raft/vote" => api::vote(&mut app, payload).await,
-
-        "/mng/change-membership" => api::change_membership(&mut app, payload).await,
-        "/mng/init" => api::init(&mut app).await,
-        "/mng/metrics" => api::metrics(&mut app).await,
-
-        _ => return StatusCode::NOT_FOUND,
-    };
-
-    StatusCode::OK
-}
-
 #[derive(Deserialize)]
 struct AddNodeRequest {
     hash: String,
@@ -182,6 +151,30 @@ struct AddNodeResponse {
 struct PoolResponse {
     status: String,
     nodes: Vec<String>,
+    message: Option<String>,
+}
+
+// Новая структура для представления узла с его потомками.
+#[derive(Serialize)]
+struct NodeFullInfo {
+    hash: String, // Хэш узла.
+    weight: f64, // Финальный вес узла.
+    descendants: Vec<DescendantInfo>, // Список потомков с глубиной и весом.
+}
+
+// Новая структура для представления потомка.
+#[derive(Serialize)]
+struct DescendantInfo {
+    hash: String, // Хэш потомка.
+    depth: usize, // Глубина относительно родителя.
+    weight: f64, // Вес потомка.
+}
+
+// Новая структура для ответа /full_graph.
+#[derive(Serialize)]
+struct FullGraphResponse {
+    status: String,
+    graph: Vec<NodeFullInfo>,
     message: Option<String>,
 }
 
@@ -224,7 +217,7 @@ async fn pool_handler(
     State(app): State<App>,
 ) -> (StatusCode, Json<PoolResponse>) {
     let state_machine = app.state_machine.state_machine.lock().unwrap();
-    let mut nodes = state_machine.data.get_weights().clone();
+    let mut nodes = state_machine.dag.get_weights().clone();
     nodes.sort_by(|a, b| a.weight.partial_cmp(&b.weight).unwrap_or(std::cmp::Ordering::Equal));
 
     // Извлекаем только хэши узлов.
@@ -251,12 +244,60 @@ async fn pool_handler(
     )
 }
 
+async fn get_full_graph_handler(
+    State(app): State<App>,
+) -> (StatusCode, Json<FullGraphResponse>) {
+    let state_machine = app.state_machine.state_machine.lock().unwrap();
+    let mut nodes = state_machine.dag.get_weights().clone();
+    nodes.sort_by(|a, b| {
+        b.weight.partial_cmp(&a.weight)
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then_with(|| a.node.cmp(&b.node))
+    });
+    // Получаем потомков для всех узлов заранее, чтобы избежать повторных вычислений.
+    let descendants_map = state_machine.dag.compute_descendants_with_depth_and_weight();
+
+    // Собираем информацию о каждом узле: хэш, вес, потомки.
+    let graph = nodes
+        .into_iter()
+        .map(|node| {
+            // Получаем потомков узла из descendants_map.
+            let descendants = descendants_map
+                .get(&node.node)
+                .unwrap_or(&Vec::new()) // Если нет потомков, возвращаем пустой вектор.
+                .iter()
+                .map(|descendant| DescendantInfo {
+                    hash: String::from(&*descendant.node),
+                    depth: descendant.depth,
+                    weight: descendant.weight,
+                })
+                .collect::<Vec<DescendantInfo>>();
+
+            NodeFullInfo {
+                hash: String::from(&*node.node),
+                weight: node.weight,
+                descendants,
+            }
+        })
+        .collect::<Vec<NodeFullInfo>>();
+
+    (
+        StatusCode::OK,
+        Json(FullGraphResponse {
+            status: "success".to_string(),
+            graph,
+            message: None,
+        }),
+    )
+}
+
 
 
 pub async fn start_server(app: App, _addr: String, port: String) -> Result<(), Box<dyn std::error::Error>> {
     let srv = Router::new()
         .route("/add", post(add_handler))
         .route("/pool", get(pool_handler))
+        .route("/full", get(get_full_graph_handler))
         .route("/write", post(write))
         .route("/raft/vote", post(vote))
         .route("/raft/append", post(append))
@@ -265,14 +306,12 @@ pub async fn start_server(app: App, _addr: String, port: String) -> Result<(), B
         .route("/mng/add-learner", post(add_learner))
         .route("/mng/init", post(init))
         .route("/mng/metrics", post(metrics))
-        .with_state(app.clone()); // Передаём граф как состояние приложения.
+        .with_state(app.clone());
 
-    // TcpListener создаёт асинхронный TCP-сокет для обработки входящих соединений.
     let http_addr = "0.0.0.0:".to_string() + &port;
     let listener = TcpListener::bind(http_addr.clone()).await?;
     info!("Server running at {}", http_addr);
 
-    // Запускаем Axum-сервер, который обрабатывает запросы.
     axum::serve(listener, srv).await?;
 
     Ok(())

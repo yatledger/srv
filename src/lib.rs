@@ -90,7 +90,6 @@ pub mod store;
 pub mod network;
 pub mod log;
 pub mod router;
-pub mod api;
 
 pub use store::StateMachineStore;
 pub use log::LogStore;
