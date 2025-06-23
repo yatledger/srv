@@ -275,7 +275,7 @@ async fn pool_handler(
 
 
 
-pub async fn start_server(app: App, http_addr: String) -> Result<(), Box<dyn std::error::Error>> {
+pub async fn start_server(app: App, _addr: String, port: String) -> Result<(), Box<dyn std::error::Error>> {
     let srv = Router::new()
         .route("/add", post(add_handler))
         .route("/pool", get(pool_handler))
@@ -290,6 +290,7 @@ pub async fn start_server(app: App, http_addr: String) -> Result<(), Box<dyn std
         .with_state(app.clone()); // Передаём граф как состояние приложения.
 
     // TcpListener создаёт асинхронный TCP-сокет для обработки входящих соединений.
+    let http_addr = "0.0.0.0:".to_string() + &port;
     let listener = TcpListener::bind(http_addr.clone()).await?;
     info!("Server running at {}", http_addr);
 

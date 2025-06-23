@@ -51,6 +51,7 @@ pub mod typ {
     pub type Fatal = openraft::error::Fatal<TypeConfig>;
     pub type RaftError<E = openraft::error::Infallible> = openraft::error::RaftError<TypeConfig, E>;
     pub type RPCError<E = openraft::error::Infallible> = openraft::error::RPCError<TypeConfig, E>;
+    pub type NetworkError = openraft::error::NetworkError;
 
     pub type ErrorSubject = openraft::ErrorSubject<TypeConfig>;
     pub type StorageError = openraft::StorageError<TypeConfig>;
@@ -92,8 +93,9 @@ pub mod log;
 pub mod router;
 pub mod api;
 
-pub type StateMachineStore = store::StateMachineStore;
+pub use store::StateMachineStore;
 pub use log::LogStore;
+pub use network::NetworkFactory;
 
 // Псевдоним для списка смежности графа: узел -> список его детей или родителей.
 pub type Adjacency = HashMap<Arc<str>, Vec<Arc<str>>>;
@@ -102,9 +104,9 @@ pub type DagDb = Arc<RwLock<DAG>>;
 pub async fn start_raft(node_id: NodeId, http_addr: String) -> (typ::Raft, App) {
     // Create a configuration for the raft instance.
     let config = Config {
-        heartbeat_interval: 500,
-        election_timeout_min: 1500,
-        election_timeout_max: 3000,
+        heartbeat_interval: 2500,
+        election_timeout_min: 5000,
+        election_timeout_max: 10000,
         // Once snapshot is built, delete the logs at once.
         // So that all further replication will be based on the snapshot.
         max_in_snapshot_log_to_keep: 0,
@@ -118,14 +120,14 @@ pub async fn start_raft(node_id: NodeId, http_addr: String) -> (typ::Raft, App) 
 
     // Create a instance of where the state machine data will be stored.
     let state_machine_store = Arc::new(StateMachineStore::default());
-    let router = Router::default();
+    let network = NetworkFactory {};
 
     // Create a local raft instance.
-    let raft = openraft::Raft::new(node_id, config, router.clone(), log_store, state_machine_store.clone())
+    let raft = openraft::Raft::new(node_id, config, network, log_store, state_machine_store.clone())
         .await
         .unwrap();
 
-    let app = App::new(node_id, http_addr.clone(), raft.clone(), router, state_machine_store);
+    let app = App::new(node_id, http_addr, raft.clone(), state_machine_store);
 
     (raft, app)
 }

@@ -18,14 +18,17 @@ pub struct Opt {
     pub id: u64,
 
     #[clap(long)]
-    pub http_addr: String,
+    pub addr: String,
+
+    #[clap(long)]
+    pub port: String,
 }
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Настраиваем логирование с фильтром по переменной окружения RUST_LOG
     tracing_subscriber::fmt()
-        .with_env_filter("info") // Устанавливаем уровень info по умолчанию
+        .with_env_filter("info")
         .with_ansi(true)
         //.with_target(true)
         //.with_thread_names(true)
@@ -35,7 +38,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     info!("Starting the DAG server");
     
     let options = Opt::parse();
-    let (_raft, app) = start_raft(options.id, options.http_addr.clone()).await;
+    let http_addr = options.addr.clone() + ":" + &options.port;
+    let (_raft, app) = start_raft(options.id, http_addr).await;
 
     /*// Создаём граф и оборачиваем его в Arc<RwLock>
     let graph = Arc::new(RwLock::new(DAG::new()));
@@ -51,7 +55,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     });*/
 
     // Запускаем сервер
-    server::start_server(app, options.http_addr).await?;
+    server::start_server(app, options.addr, options.port).await?;
 
     info!("Server shutdown");
     Ok(())

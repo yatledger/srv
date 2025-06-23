@@ -1,28 +1,24 @@
-use std::collections::BTreeMap;
 use std::time::Duration;
 use reqwest::Client;
 use openraft::error::Unreachable;
 use serde::Serialize;
 use serde::de::DeserializeOwned;
-use tracing::{debug, info, error, warn};
+use tracing::{debug, info, error};
 
-use crate::encode;
+//use anyhow::Error;
 use crate::decode;
-use crate::typ::RaftError;
+use crate::typ::*;
 use crate::NodeId;
 
 /// Симулирует сетевой маршрутизатор, отправляя HTTP-запросы между узлами Raft.
 #[derive(Debug, Clone)]
 pub struct Router {
-    /// HTTP-клиент для отправки запросов.
     client: Client,
-    /// Карта адресов узлов, например, {1: "http://localhost:8080"}.
-    pub targets: BTreeMap<NodeId, String>,
 }
 
 impl Router {
     /// Создаёт новый маршрутизатор с указанными адресами узлов.
-    pub fn new(targets: BTreeMap<NodeId, String>) -> Self {
+    pub fn new() -> Self {
         // Настраиваем HTTP-клиент с разумными таймаутами
         let client = Client::builder()
             .timeout(Duration::from_secs(30))
@@ -30,9 +26,9 @@ impl Router {
             .build()
             .expect("Failed to create HTTP client");
 
-        Router { client, targets }
+        Router { client }
     }
-
+    
     /// Отправляет запрос `Req` на узел `to` по пути `path` и ждёт ответ `Result<Resp, RaftError>`.
     pub async fn send<Req, Resp>(
         &self,
@@ -45,28 +41,13 @@ impl Router {
         Req: Serialize,
         Result<Resp, RaftError>: DeserializeOwned,
     {
-        /*// Получаем адрес целевого узла
-        let addr = self.targets.get(&to).ok_or_else(|| {
-            error!("Node {} not found in targets", to);
-        });
-
-        // Формируем полный URL
-        let url = format!("{}/{}", addr.trim_end_matches('/'), path.trim_start_matches('/'));*/
-        // let addr = self.targets.get(&to).expect("Node not found");
-
-        // Формируем полный URL, например, "http://localhost:8080/raft/append".
         let url = format!("http://{}/{}", addr.trim_end_matches('/'), path.trim_start_matches('/'));
-        info!("Sending request to {} {}: {}", to, url, encode(&req));
-        
-        // Кодируем запрос
-        let encoded_req = encode(req);
-        info!("Sending request to {}: {}", url, encoded_req);
+        info!(">>> network send request to [{}] {}: {}", to, url, serde_json::to_string_pretty(&req).unwrap());
 
         // Отправляем HTTP POST-запрос с правильным Content-Type
         let response = self.client
             .post(&url)
-            .header("Content-Type", "application/json")
-            .body(encoded_req)
+            .json(&req)
             .send()
             .await
             .map_err(|e| {
@@ -74,16 +55,16 @@ impl Router {
                 Unreachable::new(&e)
             })?;
 
-        /*// Проверяем статус ответа
-        if !response.status().is_success() {
+        // Проверяем статус ответа
+        /*if !&response.status().is_success() {
             let status = response.status();
             let error_body = response.text().await.unwrap_or_default();
             error!("HTTP error {} from {}: {}", status, url, error_body);
-            return Err(Unreachable::new(&format!("HTTP {}: {}", status, error_body)));
+            //return Err(Unreachable::new(&Error::msg(error_body)));
         }*/
 
         // Получаем тело ответа
-        let resp_str = response
+        let res = response
             .text()
             .await
             .map_err(|e| {
@@ -91,48 +72,21 @@ impl Router {
                 Unreachable::new(&e)
             })?;
 
-        debug!("Received response from {}: {}", url, resp_str);
+        info!("<<< network recv reply from {}: {}", url, res);
 
         // Декодируем ответ
         // TODO если пустой
-        decode::<Result<Resp, RaftError>>(&resp_str)
+        decode::<Result<Resp, RaftError>>(&res)
             .map_err(|e| {
                 error!("Failed to decode response from {}: {}", url, e);
                 Unreachable::new(&e)
             })
     }
 
-    /// Добавляет новый узел в targets
-    pub fn add_target(&mut self, node_id: NodeId, addr: String) {
-        info!("Adding target: {} -> {}", node_id, addr);
-        self.targets.insert(node_id, addr);
-    }
-
-    /// Удаляет узел из targets
-    pub fn remove_target(&mut self, node_id: NodeId) {
-        if self.targets.remove(&node_id).is_some() {
-            info!("Removed target: {}", node_id);
-        } else {
-            warn!("Tried to remove non-existent target: {}", node_id);
-        }
-    }
-
-    /// Проверяет доступность узла
-    pub async fn health_check(&self, node_id: NodeId) -> bool {
-        if let Some(addr) = self.targets.get(&node_id) {
-            let url = format!("{}/health", addr.trim_end_matches('/'));
-            match self.client.get(&url).send().await {
-                Ok(response) => response.status().is_success(),
-                Err(_) => false,
-            }
-        } else {
-            false
-        }
-    }
 }
 
 impl Default for Router {
     fn default() -> Self {
-        Self::new(BTreeMap::new())
+        Self::new()
     }
 }
