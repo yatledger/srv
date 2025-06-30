@@ -1,5 +1,5 @@
 //use dagdb::graph::DAG;
-//use std::sync::{Arc, RwLock};
+use std::sync::{Arc};
 use tracing::info;
 use tracing_subscriber;
 
@@ -7,7 +7,8 @@ use dagdb::server;
 use dagdb::start_raft;
 //use dagdb::cleaner;
 //use dagdb::updater;
-//use dagdb::router::Router;
+use dagdb::processor;
+use dagdb::router::Router;
 
 use clap::Parser;
 
@@ -41,18 +42,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let http_addr = options.addr.clone() + ":" + &options.port;
     let (_raft, app) = start_raft(options.id, http_addr).await;
 
-    /*// Создаём граф и оборачиваем его в Arc<RwLock>
-    let graph = Arc::new(RwLock::new(DAG::new()));
+    let router = Router::new();
 
-    let cleaner_graph = Arc::clone(&graph);
+    let processor_sm = Arc::clone(&app.state_machine);
+    let processor_raft = app.raft.clone();
+    let processor_node_id = options.id;
+    let processor_router = router.clone();
+
     tokio::spawn(async move {
-        cleaner::start_cleaner(cleaner_graph).await;
+        processor::start_processor(processor_sm, processor_raft, processor_node_id, processor_router).await;
     });
-
-    let updater_graph = Arc::clone(&graph);
-    tokio::spawn(async move {
-        updater::start_weight_updater(updater_graph).await;
-    });*/
 
     // Запускаем сервер
     server::start_server(app, options.addr, options.port).await?;

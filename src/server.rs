@@ -13,14 +13,13 @@ use tracing::{info, error, debug};
 use rand::seq::SliceRandom;
 use rand::rng;
 
-use crate::command::{Request};
-
 use crate::app::{App};
 use crate::NodeId;
 use openraft::BasicNode;
 use openraft::error::decompose::DecomposeResult;
 use crate::typ::*;
 use crate::decode;
+use crate::command::{Request, ComputeWeightsRequest, SubmitWeightsResponse, NodeWeight};
 
 /*
 async fn add_learner_minimal(
@@ -244,6 +243,54 @@ async fn pool_handler(
     )
 }
 
+// Обработчик для запроса пересчета весов (от лидера к follower)
+#[axum_macros::debug_handler]
+async fn compute_weights_handler(
+    State(app): State<App>, // Arc<App> для совместного доступа
+    Json(payload): Json<ComputeWeightsRequest>,
+) -> (StatusCode, Json<Result<SubmitWeightsResponse, RaftError>>) {
+    info!("Starting compute_weights_handler for {} nodes, dag_version: {}", payload.nodes.len(), payload.dag_version);
+    
+    // Проверяем согласованность версии DAG
+    let metrics = app.raft.metrics().borrow().clone(); // Получаем метрики Raft
+    let last_log_index = metrics.last_log_index.unwrap_or(0); // Разворачиваем Option<u64>, используя 0 для None
+    if payload.dag_version > last_log_index {
+        error!("DAG version mismatch: received {}, local {:?}", payload.dag_version, metrics.last_log_index);
+        return (
+            StatusCode::PRECONDITION_FAILED,
+            Json(Ok(SubmitWeightsResponse {
+                node_weights: Vec::new(), // Пустой список весов при несоответствии версии
+                dag_version: last_log_index,
+                message: Some(format!(
+                    "DAG version mismatch: received {}, local {:?}", 
+                    payload.dag_version, metrics.last_log_index
+                )),
+            })),
+        );
+    }
+
+    // Блокируем state_machine для доступа к DAG
+    let state_machine = app.state_machine.state_machine.lock().unwrap();
+    
+    // Пересчитываем веса для указанных узлов
+    let weights_map = state_machine.dag.compute_weights_for_batch(&payload.nodes);
+    
+    // Формируем ответ с вычисленными весами
+    let node_weights = weights_map
+        .into_iter()
+        .map(|(node, weight)| NodeWeight { node, weight })
+        .collect();
+
+    (
+        StatusCode::OK,
+        Json(Ok(SubmitWeightsResponse {
+            node_weights,
+            dag_version: payload.dag_version,
+            message: None, // Нет ошибки
+        })),
+    )
+}
+
 async fn get_full_graph_handler(
     State(app): State<App>,
 ) -> (StatusCode, Json<FullGraphResponse>) {
@@ -298,6 +345,7 @@ pub async fn start_server(app: App, _addr: String, port: String) -> Result<(), B
         .route("/add", post(add_handler))
         .route("/pool", get(pool_handler))
         .route("/full", get(get_full_graph_handler))
+        .route("/compute_weights", post(compute_weights_handler))
         .route("/write", post(write))
         .route("/raft/vote", post(vote))
         .route("/raft/append", post(append))

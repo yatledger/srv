@@ -8,7 +8,7 @@ curl -i -H "Content-Type: application/json" \
      http://127.0.0.1:21002/mng/init
 
 curl -i -H "Content-Type: application/json" \
-     -d '[[1, "127.0.0.1:21001"], [2, "127.0.0.1:21002"], [3, "127.0.0.1:21003"], [4, "127.0.0.1:21003"]]' \
+     -d '[[1, "127.0.0.1:21001"], [2, "127.0.0.1:21002"], [3, "127.0.0.1:21003"], [4, "127.0.0.1:21004"]]' \
      http://127.0.0.1:21001/mng/init
 
 curl -i -H "Content-Type: application/json" \
@@ -21,7 +21,7 @@ curl -i -H "Content-Type: application/json" \
 
 curl -i -H "Content-Type: application/json" \
      -d '[4, "127.0.0.1:21004"]' \
-     http://127.0.0.1:21002/mng/add-learner
+     http://127.0.0.1:21001/mng/add-learner
      
 curl -i -H "Content-Type: application/json" \
      -d '[1, 2, 4]' \

@@ -1,7 +1,6 @@
 pub mod graph;
 pub mod server;
-pub mod cleaner;
-pub mod updater;
+pub mod processor;
 use crate::command::{Request, Response};
 
 use openraft::Config;
