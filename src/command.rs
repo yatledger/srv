@@ -16,6 +16,11 @@ pub enum Request {
     Remove {
         hash: Arc<str>,
     },
+    // Обновление веса узла (если требуется согласование весов)
+    Weight {
+        hash: Arc<str>,
+        weight: f64,
+    },
 }
 impl Request {
     pub fn add(hash: Arc<str>, parents: Vec<Arc<str>>, data: Arc<Value>) -> Self {

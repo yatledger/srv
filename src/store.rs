@@ -128,6 +128,12 @@ impl RaftStateMachine<TypeConfig> for Arc<StateMachineStore> {
                         sm.dag.remove_node(hash.clone());
                         res.push(Response { value: None });
                     }
+                    Request::Weight { hash, weight } => {
+                        if let Some(node) = sm.dag.get_node_mut(&hash) {
+                            node.weight = *weight;
+                        }
+                        res.push(Response { value: None });
+                    }
                 },
                 EntryPayload::Membership(ref mem) => {
                     sm.last_membership = StoredMembership::new(Some(entry.log_id), mem.clone());
