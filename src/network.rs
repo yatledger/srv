@@ -1,5 +1,4 @@
 use std::future::Future;
-use tracing::{info};
 use openraft::error::ReplicationClosed;
 use openraft::network::v2::RaftNetworkV2;
 use openraft::network::RPCOption;
@@ -37,8 +36,7 @@ impl RaftNetworkV2<TypeConfig> for Connection {
         req: AppendEntriesRequest,
         _option: RPCOption,
     ) -> Result<AppendEntriesResponse, RPCError> {
-        info!("APPEND!");
-        let resp = self.router.send(self.target, &self.addr, "/raft/append", req).await?;
+        let resp = self.router.send(self.target, self.addr.clone(), "/raft/append", req).await?;
         Ok(resp)
     }
 
@@ -50,14 +48,12 @@ impl RaftNetworkV2<TypeConfig> for Connection {
         _cancel: impl Future<Output = ReplicationClosed> + OptionalSend + 'static,
         _option: RPCOption,
     ) -> Result<SnapshotResponse, StreamingError> {
-        info!("SNAPSHOT");
-        let resp = self.router.send(self.target, &self.addr, "/raft/snapshot", (vote, snapshot.meta, snapshot.snapshot)).await?;
+        let resp = self.router.send(self.target, self.addr.clone(), "/raft/snapshot", (vote, snapshot.meta, snapshot.snapshot)).await?;
         Ok(resp)
     }
 
     async fn vote(&mut self, req: VoteRequest, _option: RPCOption) -> Result<VoteResponse, RPCError> {
-        info!("VOTE");
-        let resp = self.router.send(self.target, &self.addr, "/raft/vote", req).await?;
+        let resp = self.router.send(self.target, self.addr.clone(), "/raft/vote", req).await?;
         Ok(resp)
     }
 }

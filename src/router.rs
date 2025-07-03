@@ -3,7 +3,7 @@ use reqwest::Client;
 use openraft::error::Unreachable;
 use serde::Serialize;
 use serde::de::DeserializeOwned;
-use tracing::{info, error};
+use tracing::{debug, error};
 
 //use anyhow::Error;
 use crate::decode;
@@ -33,7 +33,7 @@ impl Router {
     pub async fn send<Req, Resp>(
         &self,
         to: NodeId,
-        addr: &str,
+        addr: String,
         path: &str,
         req: Req,
     ) -> Result<Resp, Unreachable>
@@ -42,7 +42,7 @@ impl Router {
         Result<Resp, RaftError>: DeserializeOwned,
     {
         let url = format!("http://{}/{}", addr.trim_end_matches('/'), path.trim_start_matches('/'));
-        info!(">>> network send request to [{}] {}: {}", to, url, serde_json::to_string_pretty(&req).unwrap());
+        debug!(">>> network send request to [{}] {}: {}", to, url, serde_json::to_string(&req).unwrap());
 
         // Отправляем HTTP POST-запрос с правильным Content-Type
         let response = self.client
@@ -72,7 +72,7 @@ impl Router {
                 Unreachable::new(&e)
             })?;
 
-        info!("<<< network recv reply from {}: {}", url, res);
+        debug!("<<< network recv reply from {}: {}", url, res);
 
         // Декодируем ответ
         // TODO если пустой

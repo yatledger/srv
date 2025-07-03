@@ -361,23 +361,6 @@ impl DAG {
         self.nodes.remove(&node);
     }
 
-    /// Удаляет список узлов из графа параллельно с использованием Rayon.
-    /// Использует Arc<RwLock<DAG>> для потокобезопасного доступа и вызывает remove_node для каждого узла.
-    /// 
-    /// # Аргументы
-    /// * `graph` - Потокобезопасный граф, обёрнутый в Arc<RwLock<DAG>>.
-    /// * `nodes` - Вектор хэшей узлов (Vec<String>) для удаления.
-    /// 
-    /// # Логика
-    /// 1. Проверяется наличие всех узлов в графе с блокировкой чтения.
-    /// 2. Для каждого узла параллельно:
-    ///    - Получается блокировка записи через RwLock.
-    ///    - Вызывается remove_node с sync = Some(false) для удаления узла без пересчёта весов.
-    /// 3. После всех удалений пересчитываются веса с одной блокировкой записи.
-    /// 
-    /// # Возвращает
-    /// * `Ok(())` - Если все узлы успешно удалены.
-    /// * `Err(String)` - Если хотя бы один узел не существует или не удалось получить блокировку.
     pub fn remove_nodes(&mut self, nodes: Vec<Arc<str>>) -> Result<(), String> {
         for node in nodes {
             if self.contains_node(&node) {
@@ -390,6 +373,20 @@ impl DAG {
     pub fn compute_descendants_with_depth_and_weight(&self) -> HashMap<Arc<str>, Vec<NodeInfo>> {
         let node_keys: HashSet<Arc<str>> = self.nodes.keys().cloned().collect();
         compute_descendants_with_depth_and_weight(&self.nodes, &node_keys)
+    }
+
+    pub fn compute_weights_for_batch(&self, nodes: &[Arc<str>]) -> HashMap<Arc<str>, f64> {
+       // Преобразуем срез узлов в HashSet для совместимости с compute_descendants_with_depth_and_weight
+       let nodes_to_process: HashSet<Arc<str>> = nodes.iter().cloned().collect();
+       // Вызываем существующую функцию для вычисления потомков с весами
+       let descendants_map = compute_descendants_with_depth_and_weight(&self.nodes, &nodes_to_process);
+       // Агрегируем веса потомков для каждого узла
+       let mut weights = HashMap::new();
+       for (node, descendants) in descendants_map {
+           let total_weight: f64 = descendants.iter().map(|d| d.weight).sum();
+           weights.insert(node, total_weight);
+       }
+       weights
     }
 }
 
