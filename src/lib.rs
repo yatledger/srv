@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::sync::{Arc};
 use openraft::Config;
 use serde::{Deserialize, Serialize};
@@ -26,7 +26,7 @@ pub type NodeId = u64;
 
 #[derive(Debug, Clone, Deserialize, Serialize, Default)]
 pub struct Tx {
-    prnts: HashSet<Arc<str>>,
+    prnts: Vec<Arc<str>>,
     addr: Arc<str>,
     seq: u32,
     var: Value,

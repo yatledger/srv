@@ -24,10 +24,7 @@ async fn add_tx(
     State(app): State<App>,
     Json(payload): Json<TxRead>,
 ) -> (StatusCode, Json<AddTxResponse>) {
-    //let parents = payload.parents.into_iter().map(|s| Arc::from(s.as_str())).collect();
-    //let data = Arc::new(payload.data);
 
-    // Validate parents
     if let Err(err) = validate_parents(&payload.tx.prnts) {
         return (
             StatusCode::BAD_REQUEST,

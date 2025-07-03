@@ -131,7 +131,7 @@ impl DAG {
         
         let existing_parents: HashSet<Arc<str>> = tx.prnts
             .iter()
-            .filter(|p| self.nodes.contains_key(p.as_ref()))  // убираем &
+            .filter(|p| self.nodes.contains_key(p.as_ref()))
             .cloned()
             .collect();
         

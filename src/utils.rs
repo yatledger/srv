@@ -1,5 +1,5 @@
+use std::sync::Arc;
 use std::collections::HashSet;
-use std::sync::{Arc};
 //use ed25519_dalek::VerifyingKey;
 //use base58::FromBase58;
 use serde_json::{to_value, Value};
@@ -19,7 +19,6 @@ pub fn ordered_sum(tx: &Tx) -> Result<Hash, String> {
         let value = map.get(key).unwrap();
         result.push_str(&process_value(value)?);
     }
-    print!("result: {:?}", result);
     
     Ok(blake3::hash(result.as_bytes()))
 }
@@ -47,7 +46,7 @@ fn process_value(value: &Value) -> Result<String, String> {
     }
 }
 
-pub fn validate_parents(parents: &HashSet<Arc<str>>) -> Result<(), String> {
+pub fn validate_parents(parents: &Vec<Arc<str>>) -> Result<(), String> {
     // Check length constraints
     if parents.len() < 2 || parents.len() > 25 {
         return Err("parents must have between 2 and 25 elements".to_string());
@@ -55,6 +54,10 @@ pub fn validate_parents(parents: &HashSet<Arc<str>>) -> Result<(), String> {
     // Check for non-empty strings
     if parents.iter().any(|s| s.trim().is_empty()) {
         return Err("parents must not be empty strings".to_string());
+    }
+    let unique_parents: HashSet<&Arc<str>> = parents.iter().collect();
+    if unique_parents.len() != parents.len() {
+        return Err("parents must be unique".to_string());
     }
     Ok(())
 }
