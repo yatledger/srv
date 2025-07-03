@@ -1,64 +1,155 @@
-// Импортируем необходимые зависимости для создания HTTP-сервера.
 use axum::{
-    extract::{Json, State}, // Для извлечения JSON и состояния из запроса.
-    http::StatusCode, // Для работы с HTTP-статусами.
-    routing::{get, post}, // Для создания POST-эндпоинта.
-    Router, // Основной тип для маршрутизации запросов.
+    extract::{Json, State},
+    http::StatusCode,
+    routing::{post, get},
+    Router,
 };
-use serde::{Deserialize, Serialize}; // Для сериализации/десериализации JSON.
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use std::collections::HashMap; // Для возврата графа в JSON.
-use std::sync::Arc; // Для безопасного разделения графа между потоками.
-use tokio::net::TcpListener; // Для запуска асинхронного TCP-сервера.
-use rand::seq::SliceRandom; // Для перемешивания финального списка узлов.
-use rand::rng; // Для генерации случайности.
+use std::sync::Arc;
+use tokio::net::TcpListener;
 use tracing::{info, error, debug};
 
-// Импортируем структуру DAG из вашего модуля graph.rs.
-use crate::DagDb;
+use rand::seq::SliceRandom;
+use rand::rng;
 
-// Определяем структуру для десериализации JSON-запроса.
-// Она соответствует данным, которые клиент отправляет в POST-запросе на /add_node.
+use crate::app::{App};
+use crate::NodeId;
+use openraft::BasicNode;
+use openraft::error::decompose::DecomposeResult;
+use crate::typ::*;
+use crate::decode;
+use crate::command::{Request, ComputeWeightsRequest, SubmitWeightsResponse, NodeWeight};
+
+/*
+async fn add_learner_minimal(
+    State(app): State<App>,
+    Json((node_id, addr)): Json<(NodeId, String)>,
+) -> Result<Json<Value>, StatusCode> {
+    let node = BasicNode { addr };
+    let res = app.raft.add_learner(node_id, node, true).await.decompose()
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    Ok(Json(serde_json::to_value(res).unwrap()))
+}
+*/
+async fn add_learner(
+    State(app): State<App>,
+    Json(req): Json<(NodeId, String)>,
+) -> Result<Json<impl serde::Serialize>, StatusCode> {
+    info!("{} {}", req.0, req.1);
+    let node_id = req.0;
+    let node = BasicNode { addr: req.1 };
+    
+    let res = app.raft.add_learner(node_id, node, true).await.decompose().unwrap()
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    
+    Ok(Json(res))
+}
+
+use std::collections::{BTreeMap, BTreeSet};
+
+async fn change_membership(
+    State(app): State<App>,
+    Json(req): Json<BTreeSet<NodeId>>,
+) -> Result<Json<impl serde::Serialize>, StatusCode> {
+    let res = app.raft.change_membership(req, false).await.decompose()
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    Ok(Json(res))
+}
+
+async fn init(
+    State(app): State<App>,
+    body: String,
+) -> Result<Json<impl serde::Serialize>, StatusCode> {
+    let mut nodes = BTreeMap::new();
+    
+    // Пытаемся распарсить, если не получается или пусто - используем дефолт
+    let node_list: Vec<(NodeId, String)> = if body.trim().is_empty() {
+        Vec::new()
+    } else {
+        serde_json::from_str(&body).map_err(|_| StatusCode::BAD_REQUEST)?
+    };
+    
+    if node_list.is_empty() {
+        nodes.insert(app.id, BasicNode { addr: app.addr.clone() });
+    } else {
+        for (id, addr) in node_list.into_iter() {
+            nodes.insert(id, BasicNode { addr });
+        }
+    };
+    
+    let res = app.raft.initialize(nodes).await.decompose()
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    Ok(Json(res))
+}
+
+
+async fn metrics(
+    State(app): State<App>,
+) -> Result<Json<impl serde::Serialize>, StatusCode> {
+    let metrics = app.raft.metrics().borrow().clone();
+    // let res: Result<RaftMetrics<TypeConfig>, Infallible> = Ok(metrics);
+    Ok(Json(metrics))
+}
+
+async fn write(
+    State(app): State<App>,
+    Json(req): Json<Request>,
+) -> Result<Json<impl serde::Serialize>, StatusCode> {
+    let response = app.raft.client_write(req).await.decompose()
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    Ok(Json(response))
+}
+
+async fn vote(
+    State(app): State<App>,
+    Json(req): Json<VoteRequest>,
+) -> Result<Json<impl serde::Serialize>, StatusCode> {
+    let res = app.raft.vote(req).await;
+    Ok(Json(res))
+}
+
+async fn append(
+    State(app): State<App>,
+    Json(req): Json<AppendEntriesRequest>,
+) -> Result<Json<impl serde::Serialize>, StatusCode> {
+    let res = app.raft.append_entries(req).await;
+    Ok(Json(res))
+}
+
+async fn snapshot(
+    State(app): State<App>,
+    req: String,
+) -> Result<Json<impl serde::Serialize>, StatusCode> {
+    let (vote, snapshot_meta, snapshot_data): (Vote, SnapshotMeta, SnapshotData) = decode(&req);
+    
+    let snapshot = Snapshot {
+        meta: snapshot_meta,
+        snapshot: snapshot_data,
+    };
+    
+    let res = app.raft.install_full_snapshot(vote, snapshot).await;
+    
+    Ok(Json(res))
+}
+
 #[derive(Deserialize)]
 struct AddNodeRequest {
-    hash: String, // Хэш нового узла.
-    parents: Vec<String>, // Список хэшей родительских узлов.
+    hash: String,
+    parents: Vec<String>,
     data: Value,
 }
 
-// Определяем структуру для сериализации ответа клиенту.
 #[derive(Serialize)]
 struct AddNodeResponse {
-    status: String, // Статус операции: "success" или "error".
-    message: Option<String>, // Сообщение об ошибке (если есть).
-}
-
-// Структура для ответа с графом.
-#[derive(Serialize)]
-struct GraphResponse {
-    status: String, // Статус операции: "success" или "error".
-    graph: Option<HashMap<String, Vec<String>>>, // Список смежности графа.
-    message: Option<String>, // Сообщение об ошибке (если есть).
+    status: String,
+    message: Option<String>,
 }
 
 #[derive(Serialize)]
 struct PoolResponse {
-    status: String, // Статус операции: "success" или "error".
-    nodes: Vec<String>, // Обрезанный список хэшей узлов.
-    message: Option<String>, // Сообщение об ошибке (если есть).
-}
-
-#[derive(Serialize)]
-struct NodeWeight {
-    hash: String,
-    weight: f64,
-    data: Value,
-}
-
-#[derive(Serialize)]
-struct WeightsResponse {
     status: String,
-    nodes: Vec<NodeWeight>,
+    nodes: Vec<String>,
     message: Option<String>,
 }
 
@@ -82,96 +173,50 @@ struct DescendantInfo {
 #[derive(Serialize)]
 struct FullGraphResponse {
     status: String,
-    nodes: Vec<NodeFullInfo>,
+    graph: Vec<NodeFullInfo>,
     message: Option<String>,
 }
 
-#[derive(Deserialize)]
-struct RemoveRequest {
-    hashes: Vec<String>, // Список хэшей узлов для удаления.
-}
-
-#[derive(Serialize)]
-struct RemoveResponse {
-    status: String,
-    message: Option<String>,
-}
-
-// Определяем асинхронный обработчик POST-запроса на /add_node.
-// Принимает JSON с данными запроса и состояние приложения (граф).
 async fn add_handler(
-    State(graph): State<DagDb>, // Извлекаем граф, защищённый Arc и RwLock для потокобезопасности.
-    Json(payload): Json<AddNodeRequest>, // Извлекаем JSON-данные из тела запроса.
+    State(app): State<App>,
+    Json(payload): Json<AddNodeRequest>,
 ) -> (StatusCode, Json<AddNodeResponse>) {
     debug!("Starting add_handler for node: {}", payload.hash);
-    // Получаем блокировку графа для безопасного доступа.
-    // RwLock обеспечивает синхронизацию между потоками.
-    // let start = std::time::Instant::now();
-    let mut graph = match graph.write() {
-        Ok(guard) => guard,
-        Err(_) => {
-            // Если не удалось получить блокировку, возвращаем ошибку сервера.
-            error!("Failed to lock graph");
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(AddNodeResponse {
-                    status: "error".to_string(),
-                    message: Some("Failed to lock graph".to_string()),
-                }),
-            );
-        }
-    };
     // let duration = start.elapsed(); // Вычисляем время выполнения.
     // println!("add_node_handler took {} ms", duration.as_millis());
-    // Преобразуем String в Arc<str>
     let hash = Arc::from(payload.hash.as_str());
     let parents = payload.parents.into_iter().map(|s| Arc::from(s.as_str())).collect();
     let data = Arc::new(payload.data);
-    // Вызываем метод add_node_with_parents на графе.
-    let result = match graph.add_node_with_parents(hash, parents, data) {
-        Ok(()) => (
-            // Успешное добавление узла.
+
+    let request = Request::Add { hash, parents, data };
+
+    match app.raft.client_write(request).await {
+        Ok(_response) => (
             StatusCode::OK,
             Json(AddNodeResponse {
                 status: "success".to_string(),
                 message: None,
             }),
         ),
-        Err(err) => (
-            // Ошибка при добавлении узла (например, узел уже существует или цикл).
-            StatusCode::BAD_REQUEST,
-            Json(AddNodeResponse {
-                status: "error".to_string(),
-                message: Some(err),
-            }),
-        ),
-    };
-
-    debug!("Finished add_handler for node: {}, status: {}", payload.hash, result.1 .0.status);
-    result
+        Err(e) => {
+            error!("Failed to write to Raft: {}", e);
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(AddNodeResponse {
+                    status: "error".to_string(),
+                    message: Some(format!("Raft error: {}", e)),
+                }),
+            )
+        }
+    }
 }
 
+#[axum_macros::debug_handler]
 async fn pool_handler(
-    State(graph): State<DagDb>,
+    State(app): State<App>,
 ) -> (StatusCode, Json<PoolResponse>) {
-    // Получаем блокировку графа для безопасного доступа.
-    let graph = match graph.read() {
-        Ok(guard) => guard,
-        Err(_) => {
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(PoolResponse {
-                    status: "error".to_string(),
-                    nodes: vec![],
-                    message: Some("Failed to lock graph".to_string()),
-                }),
-            );
-        }
-    };
-
-    // Получаем веса узлов из графа.
-    let mut nodes = graph.get_weights().clone();
-    // Сортируем узлы по возрастанию веса.
+    let state_machine = app.state_machine.state_machine.lock().unwrap();
+    let mut nodes = state_machine.dag.get_weights().clone();
     nodes.sort_by(|a, b| a.weight.partial_cmp(&b.weight).unwrap_or(std::cmp::Ordering::Equal));
 
     // Извлекаем только хэши узлов.
@@ -187,9 +232,7 @@ async fn pool_handler(
         let target_len = (nodes.len() as f64).sqrt().ceil() as usize;
         // Обрезаем список до target_len, если он длиннее.
         nodes.truncate(target_len);
-    }
-
-    // Возвращаем ответ с обрезанным списком узлов.
+            }
     (
         StatusCode::OK,
         Json(PoolResponse {
@@ -200,221 +243,69 @@ async fn pool_handler(
     )
 }
 
-async fn get_weights_handler(State(graph): State<DagDb>) -> (StatusCode, Json<WeightsResponse>) {
-    let graph = match graph.read() {
-        Ok(guard) => guard,
-        Err(_) => {
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(WeightsResponse {
-                    status: "error".to_string(),
-                    nodes: vec![],
-                    message: Some("Failed to lock graph".to_string()),
-                }),
-            );
-        }
-    };
-    let weights = graph.get_weights();
-    let nodes = weights
-        .into_iter()
-        .map(|node| {
-            let data = graph
-                .get_node_data(&node.node)
-                .cloned()
-                .unwrap_or(Value::Null);
-            NodeWeight {
-                hash: String::from(&*node.node),
-                weight: node.weight,
-                data,
-            }
-        })
-        .collect();
-    (
-        StatusCode::OK,
-        Json(WeightsResponse {
-            status: "success".to_string(),
-            nodes,
-            message: None,
-        }),
-    )
-}
-
-// Обработчик для POST-запроса на /remove.
-// Пакетно даляет список узлов из графа.
-async fn remove_handler(
-    State(graph): State<DagDb>,
-    Json(payload): Json<RemoveRequest>,
-) -> (StatusCode, Json<RemoveResponse>) {
-    debug!("Starting remove_handler for nodes: {:?}", payload.hashes);
-    // Получаем блокировку графа для чтения
-    let existing_nodes = {
-        // Получаем блокировку для чтения в отдельном блоке
-        let graph_read = match graph.read() {
-            Ok(guard) => guard,
-            Err(_) => {
-                return (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    Json(RemoveResponse {
-                        status: "error".to_string(),
-                        message: Some("Failed to lock graph".to_string()),
-                    }),
-                );
-            }
-        };
-        //debug!("1");
-        
-        // Фильтруем существующие узлы
-        let nodes: Vec<Arc<str>> = payload
-            .hashes
-            .into_iter()
-            .filter(|hash| graph_read.contains_node(hash))
-            .map(|hash| Arc::from(hash.as_str()))
-            .collect();
-        
-        nodes
-        // Блокировка для чтения автоматически освобождается здесь
-    };
-    //debug!("2");
-
-    // Если нет существующих узлов, возвращаем ошибку
-    if existing_nodes.is_empty() {
+// Обработчик для запроса пересчета весов (от лидера к follower)
+#[axum_macros::debug_handler]
+async fn compute_weights_handler(
+    State(app): State<App>, // Arc<App> для совместного доступа
+    Json(payload): Json<ComputeWeightsRequest>,
+) -> (StatusCode, Json<Result<SubmitWeightsResponse, RaftError>>) {
+    info!("Starting compute_weights_handler for {} nodes, dag_version: {}", payload.nodes.len(), payload.dag_version);
+    
+    // Проверяем согласованность версии DAG
+    let metrics = app.raft.metrics().borrow().clone(); // Получаем метрики Raft
+    let last_log_index = metrics.last_log_index.unwrap_or(0); // Разворачиваем Option<u64>, используя 0 для None
+    if payload.dag_version > last_log_index {
+        error!("DAG version mismatch: received {}, local {:?}", payload.dag_version, metrics.last_log_index);
         return (
-            StatusCode::BAD_REQUEST,
-            Json(RemoveResponse {
-                status: "error".to_string(),
-                message: Some("No existing nodes provided".to_string()),
-            }),
+            StatusCode::PRECONDITION_FAILED,
+            Json(Ok(SubmitWeightsResponse {
+                node_weights: Vec::new(), // Пустой список весов при несоответствии версии
+                dag_version: last_log_index,
+                message: Some(format!(
+                    "DAG version mismatch: received {}, local {:?}", 
+                    payload.dag_version, metrics.last_log_index
+                )),
+            })),
         );
     }
-    //debug!("3");
 
-    let mut graph_write = match graph.write() {
-        Ok(guard) => guard,
-        Err(_) => {
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(RemoveResponse {
-                    status: "error".to_string(),
-                    message: Some("Failed to lock graph for writing".to_string()),
-                }),
-            );
-        }
-    };
-    //debug!("4");
-    // Пакетное удаление узлов
-    let result = match graph_write.remove_nodes(existing_nodes) {
-        Ok(()) => (
-            StatusCode::OK,
-            Json(RemoveResponse {
-                status: "success".to_string(),
-                message: None,
-            }),
-        ),
-        Err(err) => (
-            StatusCode::BAD_REQUEST,
-            Json(RemoveResponse {
-                status: "error".to_string(),
-                message: Some(err),
-            }),
-        ),
-    };
-
-    debug!("Finished remove_handler, status: {}", result.1 .0.status);
-    result
-}
-
-async fn get_childrens_handler(
-    State(graph): State<DagDb>,
-) -> (StatusCode, Json<GraphResponse>) {
-    // Получаем блокировку графа для безопасного доступа.
-    let graph = match graph.read() {
-        Ok(guard) => guard,
-        Err(_) => {
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(GraphResponse {
-                    status: "error".to_string(),
-                    graph: None,
-                    message: Some("Failed to lock graph".to_string()),
-                }),
-            );
-        }
-    };
-    let graph_data = graph
-        .get_childrens()
-        .iter()
-        .map(|(k, v)| (String::from(&**k), v.iter().map(|s| String::from(&**s)).collect()))
+    // Блокируем state_machine для доступа к DAG
+    let state_machine = app.state_machine.state_machine.lock().unwrap();
+    
+    // Пересчитываем веса для указанных узлов
+    let weights_map = state_machine.dag.compute_weights_for_batch(&payload.nodes);
+    
+    // Формируем ответ с вычисленными весами
+    let node_weights = weights_map
+        .into_iter()
+        .map(|(node, weight)| NodeWeight { node, weight })
         .collect();
+
     (
         StatusCode::OK,
-        Json(GraphResponse {
-            status: "success".to_string(),
-            graph: Some(graph_data),
-            message: None,
-        }),
-    )
-}
-
-async fn get_parents_handler(
-    State(graph): State<DagDb>,
-) -> (StatusCode, Json<GraphResponse>) {
-    // Получаем блокировку графа для безопасного доступа.
-    let graph = match graph.read() {
-        Ok(guard) => guard,
-        Err(_) => {
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(GraphResponse {
-                    status: "error".to_string(),
-                    graph: None,
-                    message: Some("Failed to lock graph".to_string()),
-                }),
-            );
-        }
-    };
-    let graph_data = graph
-        .get_parents()
-        .iter()
-        .map(|(k, v)| (String::from(&**k), v.iter().map(|s| String::from(&**s)).collect()))
-        .collect();
-    (
-        StatusCode::OK,
-        Json(GraphResponse {
-            status: "success".to_string(),
-            graph: Some(graph_data),
-            message: None,
-        }),
+        Json(Ok(SubmitWeightsResponse {
+            node_weights,
+            dag_version: payload.dag_version,
+            message: None, // Нет ошибки
+        })),
     )
 }
 
 async fn get_full_graph_handler(
-    State(graph): State<DagDb>,
+    State(app): State<App>,
 ) -> (StatusCode, Json<FullGraphResponse>) {
-    let graph = match graph.read() {
-        Ok(guard) => guard,
-        Err(_) => {
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(FullGraphResponse {
-                    status: "error".to_string(),
-                    nodes: vec![],
-                    message: Some("Failed to lock graph".to_string()),
-                }),
-            );
-        }
-    };
-
-    let mut weights = graph.get_weights().clone();
-    weights.sort_by(|a, b| {
+    let state_machine = app.state_machine.state_machine.lock().unwrap();
+    let mut nodes = state_machine.dag.get_weights().clone();
+    nodes.sort_by(|a, b| {
         b.weight.partial_cmp(&a.weight)
             .unwrap_or(std::cmp::Ordering::Equal)
             .then_with(|| a.node.cmp(&b.node))
     });
     // Получаем потомков для всех узлов заранее, чтобы избежать повторных вычислений.
-    let descendants_map = graph.compute_descendants_with_depth_and_weight();
+    let descendants_map = state_machine.dag.compute_descendants_with_depth_and_weight();
 
     // Собираем информацию о каждом узле: хэш, вес, потомки.
-    let nodes = weights
+    let graph = nodes
         .into_iter()
         .map(|node| {
             // Получаем потомков узла из descendants_map.
@@ -441,55 +332,35 @@ async fn get_full_graph_handler(
         StatusCode::OK,
         Json(FullGraphResponse {
             status: "success".to_string(),
-            nodes,
+            graph,
             message: None,
         }),
     )
 }
 
-// Функция для запуска HTTP-сервера.
-pub async fn start_server(graph: DagDb) -> Result<(), Box<dyn std::error::Error>> {
-    // Создаём новый граф и оборачиваем его в Arc<RwLock<_>> для потокобезопасного разделения.
-    // Arc (Atomic Reference Counting) позволяет безопасно делить данные между потоками.
-    // RwLock обеспечивает взаимоисключающий доступ к графу.
-    // let graph = Arc::new(RwLock::new(DAG::new()));
-    // Создаём маршруты для Axum-сервера.
-    // Определяем один POST-эндпоинт /add_node, который вызывает add_node_handler.
-    let app = Router::new()
+
+
+pub async fn start_server(app: App, _addr: String, port: String) -> Result<(), Box<dyn std::error::Error>> {
+    let srv = Router::new()
         .route("/add", post(add_handler))
         .route("/pool", get(pool_handler))
-        .route("/weights", get(get_weights_handler))
-        .route("/remove", post(remove_handler))
-        .route("/childrens", get(get_childrens_handler))
-        .route("/parents", get(get_parents_handler))
         .route("/full", get(get_full_graph_handler))
-        .with_state(graph.clone()); // Передаём граф как состояние приложения.
+        .route("/compute_weights", post(compute_weights_handler))
+        .route("/write", post(write))
+        .route("/raft/vote", post(vote))
+        .route("/raft/append", post(append))
+        .route("/raft/snapshot", post(snapshot))
+        .route("/mng/change-membership", post(change_membership))
+        .route("/mng/add-learner", post(add_learner))
+        .route("/mng/init", post(init))
+        .route("/mng/metrics", post(metrics))
+        .with_state(app.clone());
 
-    // Создаём фоновую задачу для вывода количества узлов каждую секунду
-    /*let graph_for_task = graph.clone();
-    tokio::spawn(async move {
-        let mut interval = tokio::time::interval(tokio::time::Duration::from_secs(1));
-        loop {
-            interval.tick().await; // Ждём следующего тика (1 секунда)
-            match graph_for_task.read() {
-                Ok(graph) => {
-                    let node_count = graph.get_node_count();
-                    info!("Current node count: {}", node_count);
-                }
-                Err(e) => {
-                    error!("Failed to lock graph for node count: {}", e);
-                }
-            }
-        }
-    });*/
+    let http_addr = "0.0.0.0:".to_string() + &port;
+    let listener = TcpListener::bind(http_addr.clone()).await?;
+    info!("Server running at {}", http_addr);
 
-    // Запускаем сервер на localhost:3000.
-    // TcpListener создаёт асинхронный TCP-сокет для обработки входящих соединений.
-    let listener = TcpListener::bind("0.0.0.0:3000").await?;
-    info!("Server running at http://127.0.0.1:3000");
-
-    // Запускаем Axum-сервер, который обрабатывает запросы.
-    axum::serve(listener, app).await?;
+    axum::serve(listener, srv).await?;
 
     Ok(())
 }
