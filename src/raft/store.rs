@@ -110,7 +110,7 @@ impl RaftStateMachine<TypeConfig> for Arc<StateMachineStore> {
     #[tracing::instrument(level = "trace", skip(self, entries))]
     async fn apply<I>(&mut self, entries: I) -> Result<Vec<Response>, StorageError>
     where I: IntoIterator<Item = Entry> {
-        let mut res = Vec::new(); //No `with_capacity`; do not know `len` of iterator
+        let mut res = Vec::new();
 
         let mut sm = self.state_machine.lock().unwrap();
 
@@ -122,9 +122,13 @@ impl RaftStateMachine<TypeConfig> for Arc<StateMachineStore> {
             match entry.payload {
                 EntryPayload::Blank => res.push(Response { value: None }),
                 EntryPayload::Normal(ref req) => match req {
-                    Request::Add { hash, parents, data } => {
-                        let _result = sm.dag.add_node_with_parents(hash.clone(), parents.clone(), data.clone());
+                    Request::Add { tx, sign, func } => {
+                        let _result = sm.dag.add_node_with_parents(tx.clone(), sign.clone(), func.clone());
                         res.push(Response { value: Some("Ok".to_string()) });
+                        /*match sm.dag.add_node_with_parents(content.clone(), sign.clone()) {
+                            Ok(()) => res.push(Response::success(Some("Ok".to_string()))),
+                            Err(e) => return Err(StorageError::new(format!("Failed to add node {}: {}", hash, e))),
+                        }*/
                     }
                     Request::Remove { hash } => {
                         sm.dag.remove_node(hash.clone());

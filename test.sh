@@ -5,7 +5,7 @@ cargo run -- --id 4 --addr 127.0.0.1 --port 21004
 
 curl -i -H "Content-Type: application/json" \
      -d '' \
-     http://127.0.0.1:21002/mng/init
+     http://127.0.0.1:21001/mng/init
 
 curl -i -H "Content-Type: application/json" \
      -d '[[1, "127.0.0.1:21001"], [2, "127.0.0.1:21002"], [3, "127.0.0.1:21003"], [4, "127.0.0.1:21004"]]' \

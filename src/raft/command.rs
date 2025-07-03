@@ -1,16 +1,16 @@
 // Модуль для определения команд и ответов Raft
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
-use serde_json::Value;
+use crate::Tx;
 
 // Команды, которые будут отправляться через Raft для управления DAG
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum Request {
     // Добавление узла с хэшом, родителями и данными
     Add {
-        hash: Arc<str>,
-        parents: Vec<Arc<str>>,
-        data: Arc<Value>,
+        tx: Tx,
+        sign: String,
+        func: String,
     },
     // Удаление узла по хэшу
     Remove {
@@ -22,6 +22,7 @@ pub enum Request {
         weight: f64,
     },
 }
+/*
 impl Request {
     pub fn add(hash: Arc<str>, parents: Vec<Arc<str>>, data: Arc<Value>) -> Self {
         Self::Add {
@@ -31,6 +32,7 @@ impl Request {
         }
     }
 }
+*/
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Response {

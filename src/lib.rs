@@ -1,11 +1,14 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::{Arc};
 use openraft::Config;
+use serde::{Deserialize, Serialize};
+use serde_json::Value;
 
 mod graph;
 mod raft;
 pub mod processor;
 pub mod server;
+pub mod utils;
 
 use raft::app::App;
 use raft::typ;
@@ -20,6 +23,14 @@ pub type Adjacency = HashMap<Arc<str>, Vec<Arc<str>>>;
 pub use raft::log::LogStore;
 
 pub type NodeId = u64;
+
+#[derive(Debug, Clone, Deserialize, Serialize, Default)]
+pub struct Tx {
+    prnts: HashSet<Arc<str>>,
+    addr: Arc<str>,
+    seq: u32,
+    var: Value,
+}
 
 openraft::declare_raft_types!(
     /// Declare the type configuration for example K/V store.
@@ -55,7 +66,9 @@ pub async fn start_raft(node_id: NodeId, http_addr: String) -> (typ::Raft, App) 
         .await
         .unwrap();
 
-    let app = App::new(node_id, http_addr, raft.clone(), state_machine_store);
+    let router = router::Router::new();
+
+    let app = App::new(node_id, http_addr, raft.clone(), state_machine_store, router);
 
     (raft, app)
 }

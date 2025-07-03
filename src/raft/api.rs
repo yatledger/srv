@@ -14,8 +14,6 @@ use crate::NodeId;
 use raft::app::{App};
 use raft::typ::*;
 use raft::decode;
-use raft::command::{Request};
-
 
 /*
 async fn add_learner_minimal(
@@ -86,15 +84,6 @@ pub async fn metrics(
     let metrics = app.raft.metrics().borrow().clone();
     // let res: Result<RaftMetrics<TypeConfig>, Infallible> = Ok(metrics);
     Ok(Json(metrics))
-}
-
-pub async fn write(
-    State(app): State<App>,
-    Json(req): Json<Request>,
-) -> Result<Json<impl serde::Serialize>, StatusCode> {
-    let response = app.raft.client_write(req).await.decompose()
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-    Ok(Json(response))
 }
 
 pub async fn vote(

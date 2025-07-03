@@ -4,96 +4,116 @@ use axum::{
     routing::{post, get},
     Router,
 };
+
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
-use std::sync::Arc;
 use tokio::net::TcpListener;
-use tracing::{info, error, debug};
+use tracing::{info, error};
 use rand::seq::SliceRandom;
 use rand::rng;
 
+use crate::Tx;
 use crate::raft;
+use crate::utils::*;
 use raft::app::{App};
 use raft::typ::*;
 use raft::api::*;
 use raft::command::{Request, ComputeWeightsRequest, SubmitWeightsResponse, NodeWeight};
 
-#[derive(Deserialize)]
-struct AddNodeRequest {
-    hash: String,
-    parents: Vec<String>,
-    data: Value,
+#[axum_macros::debug_handler]
+async fn add_tx(
+    State(app): State<App>,
+    Json(payload): Json<TxRead>,
+) -> (StatusCode, Json<AddTxResponse>) {
+    //let parents = payload.parents.into_iter().map(|s| Arc::from(s.as_str())).collect();
+    //let data = Arc::new(payload.data);
+
+    // Validate parents
+    if let Err(err) = validate_parents(&payload.tx.prnts) {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(AddTxResponse {
+                status: "error".to_string(),
+                message: Some(err),
+            }),
+        );
+    }
+
+    let metrics = app.raft.metrics().borrow().clone();
+
+    let leader_id = match metrics.current_leader {
+        Some(id) => id,
+        None => {
+            error!("No leader found for node {}", app.id);
+            return (
+                StatusCode::SERVICE_UNAVAILABLE,
+                Json(AddTxResponse {
+                    status: "error".to_string(),
+                    message: Some("No leader available".to_string()),
+                }),
+            );
+        }
+    };
+
+    let leader_addr = metrics
+        .membership_config
+        .nodes()
+        .find(|(id, _)| **id == leader_id)
+        .map(|(_, node)| node.addr.clone())
+        .expect("NO LEADER ADDR");
+
+    // Перенаправляем запрос лидеру
+    match app.router.send::<_, AddTxResponse>(leader_id, leader_addr.clone(), "/add", payload).await {
+        Ok(response) => {
+            info!("Sent to leader at {}", leader_addr);
+            (StatusCode::OK, Json(response))
+        }
+        Err(e) => {
+            error!("Failed to forward request to leader {}: {}", leader_addr, e);
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(AddTxResponse {
+                    status: "error".to_string(),
+                    message: Some(format!("Failed to contact leader: {}", e)),
+                }),
+            )
+        }
+    }
+
 }
 
-#[derive(Serialize)]
-struct AddNodeResponse {
-    status: String,
-    message: Option<String>,
-}
-
-#[derive(Serialize)]
-struct PoolResponse {
-    status: String,
-    nodes: Vec<String>,
-    message: Option<String>,
-}
-
-#[derive(Serialize)]
-struct NodeFullInfo {
-    hash: String, // Хэш узла.
-    weight: f64, // Финальный вес узла.
-    descendants: Vec<DescendantInfo>, // Список потомков с глубиной и весом.
-}
-
-#[derive(Serialize)]
-struct DescendantInfo {
-    hash: String, // Хэш потомка.
-    depth: usize, // Глубина относительно родителя.
-    weight: f64, // Вес потомка.
-}
-
-#[derive(Serialize)]
-struct FullGraphResponse {
-    status: String,
-    graph: Vec<NodeFullInfo>,
-    message: Option<String>,
-}
-
+#[axum_macros::debug_handler]
 async fn add_handler(
     State(app): State<App>,
-    Json(payload): Json<AddNodeRequest>,
-) -> (StatusCode, Json<AddNodeResponse>) {
-    debug!("Starting add_handler for node: {}", payload.hash);
-    // let duration = start.elapsed(); // Вычисляем время выполнения.
-    // println!("add_node_handler took {} ms", duration.as_millis());
-    let hash = Arc::from(payload.hash.as_str());
-    let parents = payload.parents.into_iter().map(|s| Arc::from(s.as_str())).collect();
-    let data = Arc::new(payload.data);
+    Json(payload): Json<TxRead>,
+) -> (StatusCode, Json<Result<AddTxResponse, RaftError>>) {
 
-    let request = Request::Add { hash, parents, data };
+    let tx = payload.tx;
+    let sign = payload.sign;
+    let func = payload.func;
+
+    let request = Request::Add { tx, sign, func };
 
     match app.raft.client_write(request).await {
         Ok(_response) => (
             StatusCode::OK,
-            Json(AddNodeResponse {
+            Json(Ok(AddTxResponse {
                 status: "success".to_string(),
                 message: None,
-            }),
+            })),
         ),
         Err(e) => {
             error!("Failed to write to Raft: {}", e);
             (
                 StatusCode::INTERNAL_SERVER_ERROR,
-                Json(AddNodeResponse {
+                Json(Ok(AddTxResponse {
                     status: "error".to_string(),
                     message: Some(format!("Raft error: {}", e)),
-                }),
+                })),
             )
         }
     }
 }
 
-#[axum_macros::debug_handler]
 async fn pool_handler(
     State(app): State<App>,
 ) -> (StatusCode, Json<PoolResponse>) {
@@ -126,7 +146,6 @@ async fn pool_handler(
 }
 
 // Обработчик для запроса пересчета весов (от лидера к follower)
-#[axum_macros::debug_handler]
 async fn compute_weights_handler(
     State(app): State<App>, // Arc<App> для совместного доступа
     Json(payload): Json<ComputeWeightsRequest>,
@@ -220,15 +239,56 @@ async fn get_full_graph_handler(
     )
 }
 
+#[derive(Deserialize, Serialize)]
+struct TxRead {
+    tx: Tx,
+    sign: String,
+    func: String,
+}
 
+#[derive(Deserialize, Serialize)]
+struct AddTxResponse {
+    status: String,
+    message: Option<String>,
+}
+
+#[derive(Serialize)]
+struct PoolResponse {
+    status: String,
+    nodes: Vec<String>,
+    message: Option<String>,
+}
+
+#[derive(Serialize)]
+struct NodeFullInfo {
+    hash: String, // Хэш узла.
+    weight: f64, // Финальный вес узла.
+    descendants: Vec<DescendantInfo>, // Список потомков с глубиной и весом.
+}
+
+#[derive(Serialize)]
+struct DescendantInfo {
+    hash: String, // Хэш потомка.
+    depth: usize, // Глубина относительно родителя.
+    weight: f64, // Вес потомка.
+}
+
+#[derive(Serialize)]
+struct FullGraphResponse {
+    status: String,
+    graph: Vec<NodeFullInfo>,
+    message: Option<String>,
+}
 
 pub async fn start_server(app: App, _addr: String, port: String) -> Result<(), Box<dyn std::error::Error>> {
     let srv = Router::new()
+        .route("/", post(add_tx))
         .route("/add", post(add_handler))
+        .route("/compute_weights", post(compute_weights_handler))
+
         .route("/pool", get(pool_handler))
         .route("/full", get(get_full_graph_handler))
-        .route("/compute_weights", post(compute_weights_handler))
-        .route("/write", post(write))
+        
         .route("/raft/vote", post(vote))
         .route("/raft/append", post(append))
         .route("/raft/snapshot", post(snapshot))

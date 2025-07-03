@@ -144,26 +144,17 @@ pub async fn start_processor(sm: Arc<StateMachineStore>, raft: Raft, node_id: No
             }
         }
         // Собираем узлы для архивирования (веса выше порога)
-        let nodes_to_archive = {
-            let state_machine = sm.state_machine.lock().unwrap();
-            all_weights
+        let nodes_to_archive: Vec<Arc<str>> = all_weights
             .iter()
             .filter(|(_, weight)| **weight > WEIGHT_THRESHOLD)
-            .filter_map(|(node, _)| {
-                // Получаем данные узла для сохранения в Redis
-                if let Some(data) = state_machine.dag.get_node_data(node) {
-                    Some((node.clone(), data.to_string()))
-                } else {
-                    None
-                }
-            })
-            .collect::<Vec<(Arc<str>, String)>>()
-        };
+            .map(|(node, _)| node.clone())
+            .collect();
+  
         // Записываем данные узлов в Redis перед удалением
         let mut redis_pipe = pipe();
-        for (node_name, node_data) in &nodes_to_archive {
+        for node_name in &nodes_to_archive {
             let redis_key = format!("confirmed:{}", node_name.as_ref());
-            redis_pipe.set(redis_key, node_data.clone()).ignore();
+            redis_pipe.set(redis_key, 1).ignore();
         }
 
         let redis_result: redis::RedisResult<()> = redis_pipe.query_async(&mut con).await;
@@ -171,7 +162,7 @@ pub async fn start_processor(sm: Arc<StateMachineStore>, raft: Raft, node_id: No
         match redis_result {
             Ok(_) => {
                 // Формируем команды Remove для Raft
-                let nodes_to_remove: Vec<Arc<str>> = nodes_to_archive.iter().map(|(node, _)| node.clone()).collect();
+                let nodes_to_remove: Vec<Arc<str>> = nodes_to_archive.iter().map(|node| node.clone()).collect();
                 for node in &nodes_to_remove {
                     let request = Request::Remove { hash: node.clone() };
                     match raft.client_write(request).await {
@@ -202,7 +193,7 @@ pub async fn start_processor(sm: Arc<StateMachineStore>, raft: Raft, node_id: No
                 error!("Failed to write batch to Redis: {}. Nodes will not be removed in this cycle.", e);
             }
         }
-        // info!("metrics: {:?}", metrics);
+        //info!("metrics: {:?}", metrics);
     }
      
 }
