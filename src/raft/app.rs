@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use crate::typ::Raft;
+use super::typ::Raft;
 use crate::NodeId;
 use crate::StateMachineStore;
 

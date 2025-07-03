@@ -5,8 +5,6 @@ use tracing_subscriber;
 
 use dagdb::server;
 use dagdb::start_raft;
-//use dagdb::cleaner;
-//use dagdb::updater;
 use dagdb::processor;
 use dagdb::router::Router;
 

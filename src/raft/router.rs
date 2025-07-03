@@ -6,8 +6,8 @@ use serde::de::DeserializeOwned;
 use tracing::{debug, error};
 
 //use anyhow::Error;
-use crate::decode;
-use crate::typ::*;
+use super::decode;
+use super::typ::*;
 use crate::NodeId;
 
 /// Симулирует сетевой маршрутизатор, отправляя HTTP-запросы между узлами Raft.

@@ -9,129 +9,14 @@ use serde_json::Value;
 use std::sync::Arc;
 use tokio::net::TcpListener;
 use tracing::{info, error, debug};
-
 use rand::seq::SliceRandom;
 use rand::rng;
 
-use crate::app::{App};
-use crate::NodeId;
-use openraft::BasicNode;
-use openraft::error::decompose::DecomposeResult;
-use crate::typ::*;
-use crate::decode;
-use crate::command::{Request, ComputeWeightsRequest, SubmitWeightsResponse, NodeWeight};
-
-/*
-async fn add_learner_minimal(
-    State(app): State<App>,
-    Json((node_id, addr)): Json<(NodeId, String)>,
-) -> Result<Json<Value>, StatusCode> {
-    let node = BasicNode { addr };
-    let res = app.raft.add_learner(node_id, node, true).await.decompose()
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-    Ok(Json(serde_json::to_value(res).unwrap()))
-}
-*/
-async fn add_learner(
-    State(app): State<App>,
-    Json(req): Json<(NodeId, String)>,
-) -> Result<Json<impl serde::Serialize>, StatusCode> {
-    info!("{} {}", req.0, req.1);
-    let node_id = req.0;
-    let node = BasicNode { addr: req.1 };
-    
-    let res = app.raft.add_learner(node_id, node, true).await.decompose().unwrap()
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-    
-    Ok(Json(res))
-}
-
-use std::collections::{BTreeMap, BTreeSet};
-
-async fn change_membership(
-    State(app): State<App>,
-    Json(req): Json<BTreeSet<NodeId>>,
-) -> Result<Json<impl serde::Serialize>, StatusCode> {
-    let res = app.raft.change_membership(req, false).await.decompose()
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-    Ok(Json(res))
-}
-
-async fn init(
-    State(app): State<App>,
-    body: String,
-) -> Result<Json<impl serde::Serialize>, StatusCode> {
-    let mut nodes = BTreeMap::new();
-    
-    // Пытаемся распарсить, если не получается или пусто - используем дефолт
-    let node_list: Vec<(NodeId, String)> = if body.trim().is_empty() {
-        Vec::new()
-    } else {
-        serde_json::from_str(&body).map_err(|_| StatusCode::BAD_REQUEST)?
-    };
-    
-    if node_list.is_empty() {
-        nodes.insert(app.id, BasicNode { addr: app.addr.clone() });
-    } else {
-        for (id, addr) in node_list.into_iter() {
-            nodes.insert(id, BasicNode { addr });
-        }
-    };
-    
-    let res = app.raft.initialize(nodes).await.decompose()
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-    Ok(Json(res))
-}
-
-
-async fn metrics(
-    State(app): State<App>,
-) -> Result<Json<impl serde::Serialize>, StatusCode> {
-    let metrics = app.raft.metrics().borrow().clone();
-    // let res: Result<RaftMetrics<TypeConfig>, Infallible> = Ok(metrics);
-    Ok(Json(metrics))
-}
-
-async fn write(
-    State(app): State<App>,
-    Json(req): Json<Request>,
-) -> Result<Json<impl serde::Serialize>, StatusCode> {
-    let response = app.raft.client_write(req).await.decompose()
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-    Ok(Json(response))
-}
-
-async fn vote(
-    State(app): State<App>,
-    Json(req): Json<VoteRequest>,
-) -> Result<Json<impl serde::Serialize>, StatusCode> {
-    let res = app.raft.vote(req).await;
-    Ok(Json(res))
-}
-
-async fn append(
-    State(app): State<App>,
-    Json(req): Json<AppendEntriesRequest>,
-) -> Result<Json<impl serde::Serialize>, StatusCode> {
-    let res = app.raft.append_entries(req).await;
-    Ok(Json(res))
-}
-
-async fn snapshot(
-    State(app): State<App>,
-    req: String,
-) -> Result<Json<impl serde::Serialize>, StatusCode> {
-    let (vote, snapshot_meta, snapshot_data): (Vote, SnapshotMeta, SnapshotData) = decode(&req);
-    
-    let snapshot = Snapshot {
-        meta: snapshot_meta,
-        snapshot: snapshot_data,
-    };
-    
-    let res = app.raft.install_full_snapshot(vote, snapshot).await;
-    
-    Ok(Json(res))
-}
+use crate::raft;
+use raft::app::{App};
+use raft::typ::*;
+use raft::api::*;
+use raft::command::{Request, ComputeWeightsRequest, SubmitWeightsResponse, NodeWeight};
 
 #[derive(Deserialize)]
 struct AddNodeRequest {
@@ -153,7 +38,6 @@ struct PoolResponse {
     message: Option<String>,
 }
 
-// Новая структура для представления узла с его потомками.
 #[derive(Serialize)]
 struct NodeFullInfo {
     hash: String, // Хэш узла.
@@ -161,7 +45,6 @@ struct NodeFullInfo {
     descendants: Vec<DescendantInfo>, // Список потомков с глубиной и весом.
 }
 
-// Новая структура для представления потомка.
 #[derive(Serialize)]
 struct DescendantInfo {
     hash: String, // Хэш потомка.
@@ -169,7 +52,6 @@ struct DescendantInfo {
     weight: f64, // Вес потомка.
 }
 
-// Новая структура для ответа /full_graph.
 #[derive(Serialize)]
 struct FullGraphResponse {
     status: String,

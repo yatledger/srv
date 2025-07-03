@@ -3,10 +3,10 @@ use std::sync::Arc;
 use openraft::testing::log::StoreBuilder;
 use openraft::testing::log::Suite;
 use openraft::StorageError;
-use crate::log;
+use super::log;
 
 pub type LogStore = log::LogStore<TypeConfig>;
-use crate::store::StateMachineStore;
+use super::store::StateMachineStore;
 use crate::TypeConfig;
 
 struct MemDAGStoreBuilder {}

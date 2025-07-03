@@ -1,16 +1,23 @@
-pub mod graph;
-pub mod server;
-pub mod processor;
-use crate::command::{Request, Response};
-
+use std::collections::HashMap;
+use std::sync::{Arc};
 use openraft::Config;
 
-use crate::app::App;
-use crate::store::StateMachineData;
+mod graph;
+mod raft;
+pub mod processor;
+pub mod server;
 
-use std::collections::HashMap;
-use std::sync::{Arc, RwLock};
-use graph::DAG;
+use raft::app::App;
+use raft::typ;
+use raft::network::NetworkFactory;
+use raft::command::{Request, Response};
+use raft::store::{StateMachineStore, StateMachineData};
+pub use raft::router;
+
+// Псевдоним для списка смежности графа: узел -> список его детей или родителей.
+pub type Adjacency = HashMap<Arc<str>, Vec<Arc<str>>>;
+
+pub use raft::log::LogStore;
 
 pub type NodeId = u64;
 
@@ -21,82 +28,6 @@ openraft::declare_raft_types!(
         R = Response,
         SnapshotData = StateMachineData,
 );
-
-pub mod typ {
-    use crate::TypeConfig;
-
-    pub type Raft = openraft::Raft<TypeConfig>;
-
-    pub type Vote = <TypeConfig as openraft::RaftTypeConfig>::Vote;
-    pub type LeaderId = <TypeConfig as openraft::RaftTypeConfig>::LeaderId;
-    pub type LogId = openraft::LogId<TypeConfig>;
-    pub type Entry = <TypeConfig as openraft::RaftTypeConfig>::Entry;
-    pub type EntryPayload = openraft::EntryPayload<TypeConfig>;
-    pub type Membership = openraft::membership::Membership<TypeConfig>;
-    pub type StoredMembership = openraft::StoredMembership<TypeConfig>;
-
-    pub type Node = <TypeConfig as openraft::RaftTypeConfig>::Node;
-
-    pub type LogState = openraft::storage::LogState<TypeConfig>;
-
-    pub type SnapshotMeta = openraft::SnapshotMeta<TypeConfig>;
-    pub type Snapshot = openraft::Snapshot<TypeConfig>;
-    pub type SnapshotData = <TypeConfig as openraft::RaftTypeConfig>::SnapshotData;
-
-    pub type IOFlushed = openraft::storage::IOFlushed<TypeConfig>;
-
-    pub type Infallible = openraft::error::Infallible;
-    pub type Fatal = openraft::error::Fatal<TypeConfig>;
-    pub type RaftError<E = openraft::error::Infallible> = openraft::error::RaftError<TypeConfig, E>;
-    pub type RPCError<E = openraft::error::Infallible> = openraft::error::RPCError<TypeConfig, E>;
-    pub type NetworkError = openraft::error::NetworkError;
-
-    pub type ErrorSubject = openraft::ErrorSubject<TypeConfig>;
-    pub type StorageError = openraft::StorageError<TypeConfig>;
-    pub type StreamingError = openraft::error::StreamingError<TypeConfig>;
-
-    pub type RaftMetrics = openraft::RaftMetrics<TypeConfig>;
-
-    pub type ClientWriteError = openraft::error::ClientWriteError<TypeConfig>;
-    pub type CheckIsLeaderError = openraft::error::CheckIsLeaderError<TypeConfig>;
-    pub type ForwardToLeader = openraft::error::ForwardToLeader<TypeConfig>;
-    pub type InitializeError = openraft::error::InitializeError<TypeConfig>;
-
-    pub type VoteRequest = openraft::raft::VoteRequest<TypeConfig>;
-    pub type VoteResponse = openraft::raft::VoteResponse<TypeConfig>;
-    pub type AppendEntriesRequest = openraft::raft::AppendEntriesRequest<TypeConfig>;
-    pub type AppendEntriesResponse = openraft::raft::AppendEntriesResponse<TypeConfig>;
-    pub type InstallSnapshotRequest = openraft::raft::InstallSnapshotRequest<TypeConfig>;
-    pub type InstallSnapshotResponse = openraft::raft::InstallSnapshotResponse<TypeConfig>;
-    pub type SnapshotResponse = openraft::raft::SnapshotResponse<TypeConfig>;
-    pub type ClientWriteResponse = openraft::raft::ClientWriteResponse<TypeConfig>;
-}
-
-pub fn encode<T: serde::Serialize>(t: T) -> String {
-    serde_json::to_string(&t).unwrap()
-}
-
-pub fn decode<T: serde::de::DeserializeOwned>(s: &str) -> T {
-    serde_json::from_str(s).unwrap()
-}
-
-#[cfg(test)]
-mod test;
-
-pub mod command;  // Новый модуль для команд и ответов
-pub mod app;
-pub mod store;
-pub mod network;
-pub mod log;
-pub mod router;
-
-pub use store::StateMachineStore;
-pub use log::LogStore;
-pub use network::NetworkFactory;
-
-// Псевдоним для списка смежности графа: узел -> список его детей или родителей.
-pub type Adjacency = HashMap<Arc<str>, Vec<Arc<str>>>;
-pub type DagDb = Arc<RwLock<DAG>>;
 
 pub async fn start_raft(node_id: NodeId, http_addr: String) -> (typ::Raft, App) {
     // Create a configuration for the raft instance.

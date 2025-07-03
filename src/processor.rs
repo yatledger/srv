@@ -3,14 +3,16 @@ use std::time::{Duration, Instant};
 use tokio::time;
 use tracing::{info, error, debug};
 use std::collections::{HashMap};
-use crate::router::Router;
-use crate::command::{ComputeWeightsRequest, SubmitWeightsResponse, Request};
-use crate::NodeId;
 use tokio::time::timeout;
 use redis::aio::MultiplexedConnection;
 use redis::pipe;
-use crate::StateMachineStore;
-use crate::typ::Raft;
+
+use crate::NodeId;
+use crate::raft;
+use raft::store::StateMachineStore;
+use raft::typ::Raft;
+use raft::router::Router;
+use raft::command::{ComputeWeightsRequest, SubmitWeightsResponse, Request};
 
 // Конфигурация для пересчета весов и очистки
 const UPDATE_INTERVAL: Duration = Duration::from_secs(5); // Интервал пересчета весов и очистки (5 секунд)

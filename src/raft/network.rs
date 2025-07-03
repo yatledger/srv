@@ -6,8 +6,8 @@ use openraft::BasicNode;
 use openraft::OptionalSend;
 use openraft::RaftNetworkFactory;
 
-use crate::router::Router;
-use crate::typ::*;
+use super::router::Router;
+use super::typ::*;
 use crate::NodeId;
 use crate::TypeConfig;
 

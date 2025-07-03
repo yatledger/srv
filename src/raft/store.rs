@@ -8,9 +8,11 @@ use openraft::RaftSnapshotBuilder;
 use serde::Deserialize;
 use serde::Serialize;
 
-use crate::typ::*;
+use super::command::{Request, Response};
+
+use super::typ::*;
 use crate::TypeConfig;
-use crate::command::{Request, Response};
+
 use crate::graph::dag::{DAG};
 
 #[derive(Debug)]
