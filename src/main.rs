@@ -25,7 +25,6 @@ pub struct Opt {
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    // Настраиваем логирование с фильтром по переменной окружения RUST_LOG
     tracing_subscriber::fmt()
         .with_env_filter("info")
         .with_ansi(true)

@@ -34,11 +34,11 @@ curl -i -H "Content-Type: application/json" \
 
 curl -i -H "Content-Type: application/json" \
      -d '' \
-     http://127.0.0.1:21001/mng/metrics
+     http://127.0.0.1:21003/mng/metrics
 
 curl -i -H "Content-Type: application/json" \
      -d '' \
-     http://127.0.0.1:21003/raft/snapshot
+     http://127.0.0.1:21001/raft/snapshot
 
 
 curl -i -H "Content-Type: application/json" \

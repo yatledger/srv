@@ -7,7 +7,7 @@ use axum::{
 
 use serde::{Deserialize, Serialize};
 use tokio::net::TcpListener;
-use tracing::{info, error};
+use tracing::{info, error, debug};
 use rand::seq::SliceRandom;
 use rand::rng;
 
@@ -61,7 +61,7 @@ async fn add_tx(
     // Перенаправляем запрос лидеру
     match app.router.send::<_, AddTxResponse>(leader_id, leader_addr.clone(), "/add", payload).await {
         Ok(response) => {
-            info!("Sent to leader at {}", leader_addr);
+            debug!("Sent to leader at {}", leader_addr);
             (StatusCode::OK, Json(response))
         }
         Err(e) => {
