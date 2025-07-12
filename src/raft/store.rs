@@ -123,16 +123,37 @@ impl RaftStateMachine<TypeConfig> for Arc<StateMachineStore> {
                 EntryPayload::Blank => res.push(Response { value: None }),
                 EntryPayload::Normal(ref req) => match req {
                     Request::Add { tx, sign, func } => {
-                        let _result = sm.dag.add_node_with_parents(tx.clone(), sign.clone(), func.clone());
-                        res.push(Response { value: Some("Ok".to_string()) });
-                        /*match sm.dag.add_node_with_parents(content.clone(), sign.clone()) {
-                            Ok(()) => res.push(Response::success(Some("Ok".to_string()))),
-                            Err(e) => return Err(StorageError::new(format!("Failed to add node {}: {}", hash, e))),
-                        }*/
+                        // --- ВАША ЛОГИКА ВАЛИДАЦИИ ---
+                        // Например, проверяем, что все родители существуют
+                        // let parents_exist = tx.prnts.iter().all(|p| sm.dag.get_nodes().contains_key(p));
+                        let parents_exist = true;
+                        
+                        if !parents_exist {
+                            // Проверка не пройдена. НЕ меняем DAG.
+                            // Отправляем клиенту сообщение об ошибке.
+                            tracing::warn!("Validation failed for Add request: parents do not exist.");
+                            res.push(Response { value: Some("Error: One or more parents not found.".to_string()) });
+                        } else {
+                            // Проверка пройдена. Меняем DAG.
+                            let _ = sm.dag.add_node_with_parents(tx.clone(), sign.clone(), func.clone());
+                            res.push(Response { value: Some("Ok".to_string()) });
+                        }
                     }
-                    Request::Remove { hash } => {
-                        sm.dag.remove_node(hash.clone());
-                        res.push(Response { value: None });
+                    Request::Remove { nodes } => {
+                        // --- ВАША ЛОГИКА ВАЛИДАЦИИ ---
+                        // Например, проверяем, что узлы вообще существуют перед удалением
+                        // let nodes_exist = nodes.iter().all(|n| sm.dag.get_nodes().contains_key(n));
+                        let nodes_exist = true;
+
+                        if !nodes_exist {
+                            // Проверка не пройдена. НЕ меняем DAG.
+                            tracing::warn!("Validation failed for Remove request: nodes do not exist.");
+                            res.push(Response { value: Some("Error: One or more nodes for removal not found.".to_string()) });
+                        } else {
+                            // Проверка пройдена. Меняем DAG.
+                            let _ = sm.dag.remove_nodes(nodes.clone());
+                            res.push(Response { value: Some("Ok".to_string()) });
+                        }
                     }
                     Request::Weight { hash, weight } => {
                         if let Some(node) = sm.dag.get_node_mut(&hash) {

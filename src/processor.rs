@@ -1,199 +1,132 @@
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 use tokio::time;
 use tracing::{info, error, debug};
-use std::collections::{HashMap};
-use tokio::time::timeout;
-use redis::aio::MultiplexedConnection;
-use redis::pipe;
 
 use crate::NodeId;
 use crate::raft;
 use raft::store::StateMachineStore;
 use raft::typ::Raft;
 use raft::router::Router;
-use raft::command::{ComputeWeightsRequest, SubmitWeightsResponse, Request};
+use crate::server::{HeavyNodesRequest, HeavyNodesResponse};
+use rand::seq::SliceRandom;
+
 
 // Конфигурация для пересчета весов и очистки
-const UPDATE_INTERVAL: Duration = Duration::from_secs(5); // Интервал пересчета весов и очистки (5 секунд)
-const REQUEST_TIMEOUT: Duration = Duration::from_secs(3); // Тайм-аут для ответа от follower'ов
+const UPDATE_INTERVAL: Duration = Duration::from_secs(1); // Интервал пересчета весов и очистки (1 секунда)
 const WEIGHT_THRESHOLD: f64 = 10.0; // Порог веса для удаления узлов
+const BATCH_SIZE: usize = 100; // Количество узлов для проверки за один раз
 
 // Запускает фоновую задачу для пересчета весов узлов DAG и очистки узлов с весами выше порога
 pub async fn start_processor(sm: Arc<StateMachineStore>, raft: Raft, node_id: NodeId, router: Router) {
     // Создаем интервал для периодического запуска
     let mut interval = time::interval(UPDATE_INTERVAL);
-    let mut last_cleanup_time = Instant::now(); // Время последней очистки
-
-    // Настраиваем подключение к Redis
-    let redis_url = "redis://:REDACTED_ROTATED_SECRET@localhost/0";
-    let redis_client = redis::Client::open(redis_url).expect("Failed to create Redis client");
-    let mut con: MultiplexedConnection = redis_client
-        .get_multiplexed_tokio_connection()
-        .await
-        .expect("Failed to connect to Redis");
 
     loop {
         interval.tick().await;
 
         let metrics = raft.metrics().borrow().clone();
 
-        if metrics.current_leader != Some(node_id) {
-            debug!("Not a leader (id: {}), skipping processing", node_id);
+        // Обработку выполняет только follower
+        if metrics.current_leader == Some(node_id) {
             continue;
         }
 
-        // Получаем список активных узлов кластера
-        let active_nodes: Vec<(NodeId, String)> = metrics
-            .membership_config
-            .nodes()
-            .map(|(id, node)| (*id, node.addr.clone()))
-            .collect();
-        let num_nodes = active_nodes.len();
-        if num_nodes == 0 {
-            error!("No active nodes in cluster, skipping processing");
-            continue;
-        }
-
-        let nodes: Vec<Arc<str>> = {
-            let state_machine = sm.state_machine.lock().unwrap();
-            state_machine.dag.get_node_keys()
+        let leader_id = match metrics.current_leader {
+            Some(id) => id,
+            None => {
+                debug!("No leader found, skipping processing cycle.");
+                continue; // Нет лидера, пропускаем итерацию
+            }
+        };
+        
+        // Находим адрес лидера в конфигурации
+        let leader_addr = match metrics.membership_config.nodes().find(|(id, _)| **id == leader_id) {
+            Some((_, node)) => node.addr.clone(),
+            None => {
+                error!("Could not find leader address for id {}", leader_id);
+                continue;
+            }
         };
 
-        if nodes.is_empty() {
-            debug!("No nodes in DAG, skipping processing");
-            continue;
-        }
-        // Разделяем узлы DAG на подмножества для каждого узла кластера
-        let chunk_size = (nodes.len() + num_nodes - 1) / num_nodes; // Округляем вверх
-        let chunks: Vec<&[Arc<str>]> = nodes.chunks(chunk_size).collect();
-        let mut assignments: HashMap<NodeId, Vec<Arc<str>>> = HashMap::new();
-        for (i, (node_id, _)) in active_nodes.iter().enumerate() {
-            assignments.insert(
-                *node_id,
-                chunks.get(i).map(|chunk| chunk.to_vec()).unwrap_or_default(),
-            );
-        }
+        let (nodes_to_process, dag) = {
+            let state_machine = sm.state_machine.lock().unwrap();
+            let mut all_nodes = state_machine.dag.get_node_keys();
 
-        info!(
-            "Distributing {} nodes across {} cluster nodes",
-            nodes.len(),
-            num_nodes
-        );
-
-        // Получаем текущую версию DAG из метрик Raft
-        let dag_version = metrics.last_log_index.unwrap_or(0);
-
-        // Собираем результаты вычислений
-        let mut all_weights: HashMap<Arc<str>, f64> = HashMap::new();
-        //let mut rng = ThreadRng::default();
-
-        // Отправляем запросы на пересчет весов каждому узлу
-        let mut futures = Vec::new();
-        for (node_id, addr) in active_nodes {
-            if let Some(node_list) = assignments.get(&node_id) {
-                if node_list.is_empty() {
-                    continue;
-                }
-                // Формируем запрос для пересчета весов
-                let req = ComputeWeightsRequest {
-                    nodes: node_list.clone(),
-                    dag_version,
-                };
-                // Отправляем асинхронный запрос через router
-                let future = router.send::<_, SubmitWeightsResponse>(node_id, addr.clone(), "/compute_weights", req);
-                futures.push((node_id, future));
+            if all_nodes.is_empty() {
+                continue;
             }
-        }
 
-        for (node_id, future) in futures {
-            match timeout(REQUEST_TIMEOUT, future).await {
-                Ok(Ok(response)) => {
-                    let response: SubmitWeightsResponse = response;
-                    // Проверяем согласованность версии DAG
-                    if response.dag_version < dag_version {
-                        error!(
-                            "Received outdated weights from node {}: version {} < {}",
-                            node_id, response.dag_version, dag_version
-                        );
-                        continue;
-                    }
-                    // Добавляем полученные веса в общую коллекцию
-                    for node_weight in response.node_weights {
-                        all_weights.insert(node_weight.node, node_weight.weight);
-                    }
-                }
-                Ok(Err(e)) => {
-                    error!("Failed to get weights from node {}: {}", node_id, e);
-                    // Пересчитываем локально для узлов, которые должен был обработать этот узел
-                    if let Some(failed_nodes) = assignments.get(&node_id) {
-                        let state_machine = sm.state_machine.lock().unwrap();
-                        let local_weights = state_machine.dag.compute_weights_for_batch(failed_nodes);
-                        all_weights.extend(local_weights);
-                    }
-                }
-                Err(_) => {
-                    error!("Timeout waiting for weights from node {}", node_id);
-                    // Пересчитываем локально
-                    if let Some(failed_nodes) = assignments.get(&node_id) {
-                        let state_machine = sm.state_machine.lock().unwrap();
-                        let local_weights = state_machine.dag.compute_weights_for_batch(failed_nodes);
-                        all_weights.extend(local_weights);
+            // Перемешиваем узлы и выбираем случайный батч
+            all_nodes.shuffle(&mut rand::rng());
+            all_nodes.truncate(BATCH_SIZE.min(all_nodes.len()));
+            
+            (all_nodes, state_machine.dag.clone()) // Клонируем DAG, чтобы освободить блокировку
+        };
+
+        // НОВЫЙ ШАГ: Фильтруем узлы, чтобы оставить только те, все ИЗНАЧАЛЬНЫЕ родители которых уже удалены.
+        let eligible_nodes_for_cleanup: Vec<Arc<str>> = nodes_to_process
+            .into_iter()
+            .filter(|node_hash| {
+                // Получаем данные узла
+                if let Some(node) = dag.get_nodes().get(node_hash) {
+                    // Извлекаем `prnts` из поля `data`
+                    if let Some(prnts_value) = node.data.get("prnts") {
+                        if let Some(prnts_array) = prnts_value.as_array() {
+                            // Проверяем, что НИ ОДИН изначальный родитель больше НЕ существует в графе.
+                            // .all() вернет true, если для всех родителей условие выполняется (т.е. они не найдены).
+                            return prnts_array.iter().all(|p_val| {
+                                if let Some(p_str) = p_val.as_str() {
+                                    !dag.contains_node(&Arc::from(p_str))
+                                } else {
+                                    true // Пропускаем некорректные записи в `prnts`
+                                }
+                            });
+                        }
                     }
                 }
-            }
-        }
-        // Собираем узлы для архивирования (веса выше порога)
-        let nodes_to_archive: Vec<Arc<str>> = all_weights
-            .iter()
-            .filter(|(_, weight)| **weight > WEIGHT_THRESHOLD)
-            .map(|(node, _)| node.clone())
+                // Если узел не найден или у него нет поля `prnts`, не включаем его в список на удаление.
+                false
+            })
             .collect();
-  
-        // Записываем данные узлов в Redis перед удалением
-        let mut redis_pipe = pipe();
-        for node_name in &nodes_to_archive {
-            let redis_key = format!("confirmed:{}", node_name.as_ref());
-            redis_pipe.set(redis_key, 1).ignore();
+
+        if eligible_nodes_for_cleanup.is_empty() {
+            continue; // Нет узлов, готовых к удалению, в этом батче
         }
 
-        let redis_result: redis::RedisResult<()> = redis_pipe.query_async(&mut con).await;
+        // Вычисляем веса для отфильтрованного списка узлов
+        let weights = dag.compute_weights_for_batch(&eligible_nodes_for_cleanup);
 
-        match redis_result {
-            Ok(_) => {
-                // Формируем команды Remove для Raft
-                let nodes_to_remove: Vec<Arc<str>> = nodes_to_archive.iter().map(|node| node.clone()).collect();
-                for node in &nodes_to_remove {
-                    let request = Request::Remove { hash: node.clone() };
-                    match raft.client_write(request).await {
-                        Ok(_) => {
-                            debug!("Sent Remove command for node {}", node);
-                        }
-                        Err(e) => {
-                            error!("Failed to send Remove command for node {}: {}", node, e);
-                            continue;
-                        }
+        // Фильтруем узлы, вес которых превышает порог
+        let heavy_nodes: Vec<Arc<str>> = weights
+            .into_iter()
+            .filter_map(|(node, weight)| {
+                if weight > WEIGHT_THRESHOLD {
+                    Some(node)
+                } else {
+                    None
+                }
+            })
+            .collect();
+        
+        // Если найдены "тяжелые" узлы, отправляем их лидеру для удаления
+        if !heavy_nodes.is_empty() {
+            info!("Found {} heavy nodes to remove. Sending to leader.", heavy_nodes.len());
+            let req = HeavyNodesRequest { nodes: heavy_nodes };
+
+            // Отправляем запрос лидеру
+            match router.send::<_, HeavyNodesResponse>(leader_id, leader_addr.clone(), "/remove_heavy_nodes", req).await {
+                Ok(res) => {
+                    if res.status == "success" {
+                        debug!("Successfully submitted heavy nodes to the leader.");
+                    } else {
+                        error!("Leader failed to process heavy nodes: {:?}", res.message);
                     }
                 }
-
-                // Логируем результаты очистки
-                let current_time = Instant::now();
-                let time_since_last = current_time.duration_since(last_cleanup_time);
-                last_cleanup_time = current_time;
-                let state_machine = sm.state_machine.lock().unwrap();
-                let remaining_nodes = state_machine.dag.get_node_count();
-                info!(
-                    "Removed: {}. Remaining: {}. Time: {:.2}s",
-                    nodes_to_archive.len(),
-                    remaining_nodes,
-                    time_since_last.as_secs_f64()
-                );
-            }
-            Err(e) => {
-                error!("Failed to write batch to Redis: {}. Nodes will not be removed in this cycle.", e);
+                Err(e) => {
+                    error!("Failed to send heavy nodes to leader {}: {}", leader_addr, e);
+                }
             }
         }
-        //info!("metrics: {:?}", metrics);
     }
-     
 }

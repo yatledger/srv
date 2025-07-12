@@ -4,6 +4,8 @@ use openraft::Config;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+use redis::aio::ConnectionManager;
+
 mod graph;
 mod raft;
 pub mod processor;
@@ -68,7 +70,12 @@ pub async fn start_raft(node_id: NodeId, http_addr: String) -> (typ::Raft, App) 
 
     let router = router::Router::new();
 
-    let app = App::new(node_id, http_addr, raft.clone(), state_machine_store, router);
+    // Настраиваем подключение к Redis
+    let redis_url = "redis://:REDACTED_ROTATED_SECRET@localhost/0";
+    let redis_client = redis::Client::open(redis_url).expect("Failed to create Redis client");
+    let redis = ConnectionManager::new(redis_client).await.unwrap();
+
+    let app = App::new(node_id, http_addr, raft.clone(), state_machine_store, router, redis);
 
     (raft, app)
 }

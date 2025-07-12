@@ -5,11 +5,15 @@ use axum::{
     Router,
 };
 
+use std::sync::Arc;
 use serde::{Deserialize, Serialize};
 use tokio::net::TcpListener;
 use tracing::{info, error, debug};
 use rand::seq::SliceRandom;
 use rand::rng;
+
+use redis::AsyncCommands;
+use redis::pipe;
 
 use crate::Tx;
 use crate::raft;
@@ -17,7 +21,7 @@ use crate::utils::*;
 use raft::app::{App};
 use raft::typ::*;
 use raft::api::*;
-use raft::command::{Request, ComputeWeightsRequest, SubmitWeightsResponse, NodeWeight};
+use raft::command::{Request};
 
 #[axum_macros::debug_handler]
 async fn add_tx(
@@ -142,51 +146,173 @@ async fn pool_handler(
     )
 }
 
-// Обработчик для запроса пересчета весов (от лидера к follower)
-async fn compute_weights_handler(
-    State(app): State<App>, // Arc<App> для совместного доступа
-    Json(payload): Json<ComputeWeightsRequest>,
-) -> (StatusCode, Json<Result<SubmitWeightsResponse, RaftError>>) {
-    info!("Starting compute_weights_handler for {} nodes, dag_version: {}", payload.nodes.len(), payload.dag_version);
-    
-    // Проверяем согласованность версии DAG
-    let metrics = app.raft.metrics().borrow().clone(); // Получаем метрики Raft
-    let last_log_index = metrics.last_log_index.unwrap_or(0); // Разворачиваем Option<u64>, используя 0 для None
-    if payload.dag_version > last_log_index {
-        error!("DAG version mismatch: received {}, local {:?}", payload.dag_version, metrics.last_log_index);
+#[axum_macros::debug_handler]
+async fn remove_heavy_nodes_handler(
+    State(app): State<App>,
+    Json(payload): Json<HeavyNodesRequest>,
+) -> (StatusCode, Json<HeavyNodesResponse>) {
+    // Этот эндпоинт предназначен только для лидера.
+    if app.raft.metrics().borrow().current_leader != Some(app.id) {
+        error!("A non-leader node received a request to /remove_heavy_nodes");
         return (
-            StatusCode::PRECONDITION_FAILED,
-            Json(Ok(SubmitWeightsResponse {
-                node_weights: Vec::new(), // Пустой список весов при несоответствии версии
-                dag_version: last_log_index,
-                message: Some(format!(
-                    "DAG version mismatch: received {}, local {:?}", 
-                    payload.dag_version, metrics.last_log_index
-                )),
-            })),
+            StatusCode::FORBIDDEN,
+            Json(HeavyNodesResponse {
+                status: "error".to_string(),
+                message: Some("Only the leader can process this request.".to_string()),
+            }),
+        );
+    }
+    
+    if payload.nodes.is_empty() {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(HeavyNodesResponse {
+                status: "error".to_string(),
+                message: Some("Node list cannot be empty.".to_string()),
+            }),
         );
     }
 
-    // Блокируем state_machine для доступа к DAG
-    let state_machine = app.state_machine.state_machine.lock().unwrap();
-    
-    // Пересчитываем веса для указанных узлов
-    let weights_map = state_machine.dag.compute_weights_for_batch(&payload.nodes);
-    
-    // Формируем ответ с вычисленными весами
-    let node_weights = weights_map
-        .into_iter()
-        .map(|(node, weight)| NodeWeight { node, weight })
-        .collect();
+    info!("Leader received a request to remove {} heavy nodes.", payload.nodes.len());
 
-    (
-        StatusCode::OK,
-        Json(Ok(SubmitWeightsResponse {
-            node_weights,
-            dag_version: payload.dag_version,
-            message: None, // Нет ошибки
-        })),
-    )
+    /*
+    let mut redis = app.redis.clone();
+
+    // Получаем данные из state_machine в отдельном блоке
+    let mut nodes_data: Vec<(Arc<str>, String)> = Vec::new();
+    {
+        let state_machine = app.state_machine.state_machine.lock().unwrap();
+        
+        for node in payload.nodes.iter() {
+            if let Some(node_data) = state_machine.dag.get_node_data(&node) {
+                match serde_json::to_string(&node_data) {
+                    Ok(json) => {
+                        nodes_data.push((node.clone(), json));
+                    }
+                    Err(e) => {
+                        error!("Failed to serialize node {} data: {}", node, e);
+                        continue;
+                    }
+                }
+            }
+        }
+    } // MutexGuard освобождается здесь
+
+    // Теперь работаем с Redis без удерживания MutexGuard
+    let mut nodes_to_remove: Vec<Arc<str>> = Vec::new();
+    
+    for (node, _) in &nodes_data {
+        let exists: bool = match redis.exists(&node.to_string()).await {
+            Ok(exists) => exists,
+            Err(e) => {
+                error!("Failed to check node {} in Redis: {}", node, e);
+                continue;
+            }
+        };
+
+        if exists {
+            debug!("Node {} already exists in Redis, skipping.", node);
+            continue;
+        }
+        
+        nodes_to_remove.push(node.clone());
+    }
+
+    // Записываем в Redis
+    let mut redis_pipe = redis::pipe();
+    for (node, node_data_json) in &nodes_data {
+        if nodes_to_remove.contains(node) {
+            let redis_key = format!("confirmed:{}", node.as_ref());
+            redis_pipe.set(redis_key, node_data_json).ignore();
+            debug!("Node {} added to Redis with its data.", node);
+        }
+    }
+    
+     */
+
+    let mut redis = app.redis.clone();
+    
+    // Формируем список узлов для удаления, исключая те, что уже есть в Redis
+    let mut nodes_to_remove: Vec<Arc<str>> = Vec::new();
+    for node in payload.nodes.iter() {
+        // Проверяем, существует ли узел в Redis
+        let exists: bool = match redis.exists(&node.to_string()).await {
+            Ok(exists) => exists,
+            Err(e) => {
+                error!("Failed to check node {} in Redis: {}", node, e);
+                continue; // Пропускаем узел при ошибке Redis
+            }
+        };
+
+        if exists {
+            debug!("Node {} already exists in Redis, skipping.", node);
+            continue;
+        }
+        // Добавляем узел в список для удаления
+        nodes_to_remove.push(node.clone());
+    }
+
+    let mut redis_pipe = pipe();
+    for node in &nodes_to_remove {
+        // Получаем данные узла из DAG
+        if let Some(node_data) = state_machine.dag.get_node_data(&node) {
+            // Сериализуем данные узла в JSON
+            let node_data_json = match serde_json::to_string(&node_data) {
+                Ok(json) => json,
+                Err(e) => {
+                    error!("Failed to serialize node {} data: {}", node, e);
+                    continue; // Пропускаем узел при ошибке сериализации
+                }
+            };
+
+            // Записываем узел и его данные в Redis
+            let redis_key = format!("confirmed:{}", node.as_ref());
+            redis_pipe.set(redis_key, node_data_json).ignore();
+            debug!("Node {} added to Redis with its data.", node);
+        } else {
+            debug!("No data found for node {}, skipping Redis write.", node);
+        }
+        
+    }
+
+    let redis_result: redis::RedisResult<()> = redis_pipe.query_async(&mut redis).await;
+
+    match redis_result {
+        Ok(_) => {
+            let request = Request::Remove { nodes: payload.nodes };
+
+            match app.raft.client_write(request).await {
+                Ok(_response) => (
+                    StatusCode::OK,
+                    Json(HeavyNodesResponse {
+                        status: "success".to_string(),
+                        message: None,
+                    }),
+                ),
+                Err(e) => {
+                    error!("Failed to write RemoveNodes to Raft: {}", e);
+                    (
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        Json(HeavyNodesResponse {
+                            status: "error".to_string(),
+                            message: Some(format!("Raft error: {}", e)),
+                        }),
+                    )
+                }
+            }
+        }
+        Err(e) => {
+            error!("Failed to write batch to Redis: {}. Nodes will not be removed in this cycle.", e);
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(HeavyNodesResponse {
+                    status: "error".to_string(),
+                    message: Some(format!("Redis error: {}", e)),
+                }),
+            )
+        }
+    }
+
 }
 
 async fn get_full_graph_handler(
@@ -277,11 +403,24 @@ struct FullGraphResponse {
     message: Option<String>,
 }
 
+#[derive(Deserialize, Serialize, Clone, Debug)]
+pub struct HeavyNodesRequest {
+    pub nodes: Vec<Arc<str>>,
+}
+
+// NEW: Response for the heavy nodes submission.
+// `pub` allows it to be imported by `processor.rs`.
+#[derive(Deserialize, Serialize, Debug)]
+pub struct HeavyNodesResponse {
+    pub status: String,
+    pub message: Option<String>,
+}
+
 pub async fn start_server(app: App, _addr: String, port: String) -> Result<(), Box<dyn std::error::Error>> {
     let srv = Router::new()
         .route("/", post(add_tx))
         .route("/add", post(add_handler))
-        .route("/compute_weights", post(compute_weights_handler))
+        .route("/remove_heavy_nodes", post(remove_heavy_nodes_handler))
 
         .route("/pool", get(pool_handler))
         .route("/full", get(get_full_graph_handler))

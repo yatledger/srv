@@ -23,9 +23,9 @@ fn calculate_weight(depth: usize) -> f64 {
     1.0 / depth as f64
 }
 
-/*
+
 /// Вычисляет итоговый вес каждого узла на основе суммы весов всех его потомков
-pub fn compute_weights(nodes_map: &HashMap<Arc<str>, Node>) -> HashMap<Arc<str>, f64> {
+/*pub fn compute_weights(nodes_map: &HashMap<Arc<str>, Node>) -> HashMap<Arc<str>, f64> {
     let all_nodes: HashSet<Arc<str>> = nodes_map.keys().cloned().collect();
     let descendants_map = compute_descendants_with_depth_and_weight(nodes_map, &all_nodes);
 
@@ -37,8 +37,7 @@ pub fn compute_weights(nodes_map: &HashMap<Arc<str>, Node>) -> HashMap<Arc<str>,
     }
     
     weights_map
-}
-     */
+}*/
 
 /// Основной алгоритм: вычисляет всех потомков для каждого узла с их глубиной и весом
 /// Использует простую формулу: вес = 1/глубина
