@@ -12,7 +12,6 @@ use tracing::{info, error, debug};
 use rand::seq::SliceRandom;
 use rand::rng;
 
-use redis::AsyncCommands;
 use redis::pipe;
 
 use crate::Tx;
@@ -151,7 +150,7 @@ async fn remove_heavy_nodes_handler(
     State(app): State<App>,
     Json(payload): Json<HeavyNodesRequest>,
 ) -> (StatusCode, Json<HeavyNodesResponse>) {
-    // Этот эндпоинт предназначен только для лидера.
+    // Проверяем, является ли текущий узел лидером
     if app.raft.metrics().borrow().current_leader != Some(app.id) {
         error!("A non-leader node received a request to /remove_heavy_nodes");
         return (
@@ -162,7 +161,8 @@ async fn remove_heavy_nodes_handler(
             }),
         );
     }
-    
+
+    // Проверяем, что список узлов не пустой
     if payload.nodes.is_empty() {
         return (
             StatusCode::BAD_REQUEST,
@@ -175,112 +175,70 @@ async fn remove_heavy_nodes_handler(
 
     info!("Leader received a request to remove {} heavy nodes.", payload.nodes.len());
 
-    /*
+    // Клонируем Redis соединение
     let mut redis = app.redis.clone();
-
-    // Получаем данные из state_machine в отдельном блоке
-    let mut nodes_data: Vec<(Arc<str>, String)> = Vec::new();
+    // Формируем список узлов для удаления, исключая те, что уже есть в added
+    let mut nodes_to_remove: Vec<Arc<str>> = Vec::new();
     {
+        // Блокируем state_machine для проверки поля added
         let state_machine = app.state_machine.state_machine.lock().unwrap();
-        
         for node in payload.nodes.iter() {
-            if let Some(node_data) = state_machine.dag.get_node_data(&node) {
-                match serde_json::to_string(&node_data) {
-                    Ok(json) => {
-                        nodes_data.push((node.clone(), json));
-                    }
-                    Err(e) => {
-                        error!("Failed to serialize node {} data: {}", node, e);
-                        continue;
-                    }
-                }
+            // Проверяем, отсутствует ли узел в added
+            if !state_machine.dag.is_node_added(node) {
+                nodes_to_remove.push(node.clone());
+                debug!("Node {} not in added, marked for removal.", node);
+            } else {
+                debug!("Node {} already in added, skipping.", node);
             }
         }
     } // MutexGuard освобождается здесь
 
-    // Теперь работаем с Redis без удерживания MutexGuard
-    let mut nodes_to_remove: Vec<Arc<str>> = Vec::new();
-    
-    for (node, _) in &nodes_data {
-        let exists: bool = match redis.exists(&node.to_string()).await {
-            Ok(exists) => exists,
-            Err(e) => {
-                error!("Failed to check node {} in Redis: {}", node, e);
-                continue;
-            }
-        };
-
-        if exists {
-            debug!("Node {} already exists in Redis, skipping.", node);
-            continue;
-        }
-        
-        nodes_to_remove.push(node.clone());
+    // Если нет узлов для удаления, возвращаем успех
+    if nodes_to_remove.is_empty() {
+        return (
+            StatusCode::OK,
+            Json(HeavyNodesResponse {
+                status: "success".to_string(),
+                message: Some("No new nodes to remove.".to_string()),
+            }),
+        );
     }
 
-    // Записываем в Redis
-    let mut redis_pipe = redis::pipe();
-    for (node, node_data_json) in &nodes_data {
-        if nodes_to_remove.contains(node) {
-            let redis_key = format!("confirmed:{}", node.as_ref());
-            redis_pipe.set(redis_key, node_data_json).ignore();
-            debug!("Node {} added to Redis with its data.", node);
-        }
-    }
-    
-     */
-
-    let mut redis = app.redis.clone();
-    
-    // Формируем список узлов для удаления, исключая те, что уже есть в Redis
-    let mut nodes_to_remove: Vec<Arc<str>> = Vec::new();
-    for node in payload.nodes.iter() {
-        // Проверяем, существует ли узел в Redis
-        let exists: bool = match redis.exists(&node.to_string()).await {
-            Ok(exists) => exists,
-            Err(e) => {
-                error!("Failed to check node {} in Redis: {}", node, e);
-                continue; // Пропускаем узел при ошибке Redis
-            }
-        };
-
-        if exists {
-            debug!("Node {} already exists in Redis, skipping.", node);
-            continue;
-        }
-        // Добавляем узел в список для удаления
-        nodes_to_remove.push(node.clone());
-    }
-
+    // Создаем пайплайн для записи в Redis
     let mut redis_pipe = pipe();
-    for node in &nodes_to_remove {
-        // Получаем данные узла из DAG
-        if let Some(node_data) = state_machine.dag.get_node_data(&node) {
-            // Сериализуем данные узла в JSON
-            let node_data_json = match serde_json::to_string(&node_data) {
-                Ok(json) => json,
-                Err(e) => {
-                    error!("Failed to serialize node {} data: {}", node, e);
-                    continue; // Пропускаем узел при ошибке сериализации
-                }
-            };
+    {
+        // Блокируем state_machine для получения данных узлов
+        let state_machine = app.state_machine.state_machine.lock().unwrap();
+        for node in &nodes_to_remove {
+            // Получаем данные узла из DAG
+            if let Some(node_data) = state_machine.dag.get_node_data(node) {
+                // Сериализуем данные узла в JSON
+                let node_data_json = match serde_json::to_string(&node_data) {
+                    Ok(json) => json,
+                    Err(e) => {
+                        error!("Failed to serialize node {} data: {}", node, e);
+                        continue; // Пропускаем узел при ошибке сериализации
+                    }
+                };
 
-            // Записываем узел и его данные в Redis
-            let redis_key = format!("confirmed:{}", node.as_ref());
-            redis_pipe.set(redis_key, node_data_json).ignore();
-            debug!("Node {} added to Redis with its data.", node);
-        } else {
-            debug!("No data found for node {}, skipping Redis write.", node);
+                // Формируем ключ для Redis
+                let redis_key = format!("confirmed:{}", node.as_ref());
+                // Добавляем команду в пайплайн для записи узла и его данных
+                redis_pipe.set(redis_key, node_data_json).ignore();
+                debug!("Node {} added to Redis pipeline with its data.", node);
+            } else {
+                debug!("No data found for node {}, skipping Redis write.", node);
+            }
         }
-        
-    }
+    } // MutexGuard освобождается здесь
 
+    // Выполняем пакетную запись в Redis
     let redis_result: redis::RedisResult<()> = redis_pipe.query_async(&mut redis).await;
-
     match redis_result {
         Ok(_) => {
-            let request = Request::Remove { nodes: payload.nodes };
-
+            // Формируем запрос для Raft
+            let request = Request::Remove { nodes: nodes_to_remove };
+            // Отправляем команду на удаление в Raft
             match app.raft.client_write(request).await {
                 Ok(_response) => (
                     StatusCode::OK,
@@ -302,7 +260,7 @@ async fn remove_heavy_nodes_handler(
             }
         }
         Err(e) => {
-            error!("Failed to write batch to Redis: {}. Nodes will not be removed in this cycle.", e);
+            error!("Failed to write batch to Redis: {}. Nodes will not be removed.", e);
             (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 Json(HeavyNodesResponse {
@@ -312,7 +270,6 @@ async fn remove_heavy_nodes_handler(
             )
         }
     }
-
 }
 
 async fn get_full_graph_handler(

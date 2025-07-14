@@ -36,6 +36,7 @@ pub struct Node {
 #[derive(Debug, Clone)]
 pub struct DAG {
     nodes: HashMap<Arc<str>, Node>,
+    added: HashMap<Arc<str>, u64>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -56,6 +57,7 @@ impl DAG {
     pub fn new() -> Self {
         let mut dag = DAG {
             nodes: HashMap::new(),
+            added: HashMap::new(),
         };
         // Загрузка генезис-транзакций
         if let Ok(genesis_content) = fs::read_to_string("genesis.json") {
@@ -88,9 +90,15 @@ impl DAG {
     pub fn add_node_with_parents(&mut self, tx: Tx, sign: String, func: String) -> Result<(), String> {
 
         // Validate parents
-        // validate_parents(&content.parents);
         if let Err(err) = validate_parents(&tx.prnts) {
             return Err(err);
+        }
+
+        // Проверяем, что каждый родитель существует либо в nodes, либо в added
+        for parent in &tx.prnts {
+            if !self.nodes.contains_key(parent.as_ref()) && !self.added.contains_key(parent.as_ref()) {
+                return Err(format!("Parent {} does not exist in nodes or added", parent.as_ref()));
+            }
         }
 
         let (ca, to, val, msg) = if func == "transferToken" {
@@ -112,6 +120,12 @@ impl DAG {
         let tx_hash_bytes = ordered_sum(&tx)
             .map_err(|e| format!("Ordered sum error: {}", e))?;
 
+        let tx_hash = Arc::from(tx_hash_bytes.to_hex().to_string());
+
+        if self.nodes.contains_key(&tx_hash) {
+            return Err("Node already exists".to_string());
+        }
+
         // Декодируем подпись из hex
         let signature_bytes = <[u8; 64]>::from_hex(sign.as_str())
             .map_err(|_| "Invalid hex for signature".to_string())?;
@@ -121,12 +135,6 @@ impl DAG {
         // Проверяем подпись
         if verify_key.verify(tx_hash_bytes.as_bytes(), &signature).is_err() {
             return Err("Signature verification failed".to_string());
-        }
-
-        let tx_hash = Arc::from(tx_hash_bytes.to_hex().to_string());
-
-        if self.nodes.contains_key(&tx_hash) {
-            return Err("Node already exists".to_string());
         }
         
         let existing_parents: HashSet<Arc<str>> = tx.prnts
@@ -242,6 +250,12 @@ impl DAG {
             }
         }
         self.nodes.remove(&node);
+        // Добавляем удаленный узел в added с текущим временем в микросекундах
+        let timestamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_micros() as u64)
+            .unwrap_or(0);
+        self.added.insert(node, timestamp);
     }
 
     pub fn remove_nodes(&mut self, nodes: Vec<Arc<str>>) -> Result<(), String> {
@@ -251,6 +265,10 @@ impl DAG {
             }
         }
         Ok(())
+    }
+
+    pub fn is_node_added(&self, node: &Arc<str>) -> bool {
+        self.added.contains_key(node)
     }
 
     pub fn compute_descendants_with_depth_and_weight(&self) -> HashMap<Arc<str>, Vec<NodeInfo>> {
@@ -373,19 +391,42 @@ impl<'de> Deserialize<'de> for DAG {
             where
                 V: MapAccess<'de>,
             {
+                // Инициализируем поля для хранения данных
                 let mut nodes = None;
+                let mut added = None;
+
+                // Читаем ключи и значения из map
                 while let Some(key) = map.next_key::<String>()? {
-                    if key == "nodes" {
-                        let nodes_map: HashMap<String, Node> = map.next_value()?;
-                        nodes = Some(nodes_map.into_iter().map(|(k, v)| (Arc::from(k.as_str()), v)).collect());
-                    } else {
-                        let _ = map.next_value::<serde_json::Value>()?;
+                    match key.as_str() {
+                        "nodes" => {
+                            // Десериализуем nodes как HashMap<String, Node>
+                            let nodes_map: HashMap<String, Node> = map.next_value()?;
+                            // Преобразуем ключи String в Arc<str>
+                            nodes = Some(nodes_map.into_iter()
+                                .map(|(k, v)| (Arc::from(k.as_str()), v))
+                                .collect());
+                        }
+                        "added" => {
+                            // Десериализуем added как HashMap<String, u64>
+                            let added_map: HashMap<String, u64> = map.next_value()?;
+                            // Преобразуем ключи String в Arc<str>
+                            added = Some(added_map.into_iter()
+                                .map(|(k, v)| (Arc::from(k.as_str()), v))
+                                .collect());
+                        }
+                        // Игнорируем неизвестные поля
+                        _ => {
+                            let _ = map.next_value::<serde_json::Value>()?;
+                        }
                     }
                 }
 
-                Ok(DAG {
-                    nodes: nodes.unwrap_or_default(),
-                })
+                // Проверяем наличие обязательного поля nodes, added может быть пустым
+                let nodes = nodes.unwrap_or_default();
+                let added = added.unwrap_or_default();
+
+                // Возвращаем заполненную структуру DAG
+                Ok(DAG { nodes, added })
             }
         }
 
