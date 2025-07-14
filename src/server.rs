@@ -20,15 +20,21 @@ use crate::utils::*;
 use crate::app::App;
 use raft::typ::*;
 use raft::api::*;
-use raft::command::{Request};
+use raft::command::Request;
 
-use crate::web::{ApiResponse};
+use crate::web::ApiResponse;
+
+#[derive(Deserialize, Serialize, Debug)]
+pub struct StandardResponse {
+    pub status: String,
+    pub message: Option<String>,
+}
 
 #[axum_macros::debug_handler]
 async fn add_tx(
     State(app): State<App>,
     Json(payload): Json<TxRead>,
-) -> (StatusCode, Json<ApiResponse<AddTxResponse>>) {
+) -> (StatusCode, Json<ApiResponse<StandardResponse>>) {
 
     if let Err(err) = validate_parents(&payload.tx.prnts) {
         return (
@@ -64,7 +70,7 @@ async fn add_tx(
         .expect("NO LEADER ADDR");
 
     // Перенаправляем запрос лидеру
-    match app.router.send::<_, AddTxResponse>(&leader_addr, "/add", payload).await {
+    match app.router.send::<_, StandardResponse>(&leader_addr, "/add", payload).await {
         Ok(response) => {
             debug!("Successfully forwarded to leader at {}", leader_addr);
             (StatusCode::OK, Json(ApiResponse::Success(response)))
@@ -88,7 +94,7 @@ async fn add_tx(
 async fn add_handler(
     State(app): State<App>,
     Json(payload): Json<TxRead>,
-) -> (StatusCode, Json<Result<AddTxResponse, RaftError>>) {
+) -> (StatusCode, Json<Result<StandardResponse, RaftError>>) {
 
     let tx = payload.tx;
     let sign = payload.sign;
@@ -99,7 +105,7 @@ async fn add_handler(
     match app.raft.client_write(request).await {
         Ok(_response) => (
             StatusCode::OK,
-            Json(Ok(AddTxResponse {
+            Json(Ok(StandardResponse {
                 status: "success".to_string(),
                 message: None,
             })),
@@ -108,7 +114,7 @@ async fn add_handler(
             error!("Failed to write to Raft: {}", e);
             (
                 StatusCode::INTERNAL_SERVER_ERROR,
-                Json(Ok(AddTxResponse {
+                Json(Ok(StandardResponse {
                     status: "error".to_string(),
                     message: Some(format!("Raft error: {}", e)),
                 })),
@@ -152,15 +158,15 @@ async fn pool_handler(
 async fn remove_heavy_nodes_handler(
     State(app): State<App>,
     Json(payload): Json<HeavyNodesRequest>,
-) -> (StatusCode, Json<HeavyNodesResponse>) {
+) -> (StatusCode, Json<ApiResponse<StandardResponse>>) {
     // Проверяем, является ли текущий узел лидером
     if app.raft.metrics().borrow().current_leader != Some(app.id) {
         error!("A non-leader node received a request to /remove_heavy_nodes");
         return (
             StatusCode::FORBIDDEN,
-            Json(HeavyNodesResponse {
+            Json(ApiResponse::Error {
                 status: "error".to_string(),
-                message: Some("Only the leader can process this request.".to_string()),
+                message: "Only the leader can process this request.".to_string(),
             }),
         );
     }
@@ -169,9 +175,9 @@ async fn remove_heavy_nodes_handler(
     if payload.nodes.is_empty() {
         return (
             StatusCode::BAD_REQUEST,
-            Json(HeavyNodesResponse {
+            Json(ApiResponse::Error {
                 status: "error".to_string(),
-                message: Some("Node list cannot be empty.".to_string()),
+                message: "Node list cannot be empty.".to_string(),
             }),
         );
     }
@@ -200,9 +206,9 @@ async fn remove_heavy_nodes_handler(
     if nodes_to_remove.is_empty() {
         return (
             StatusCode::OK,
-            Json(HeavyNodesResponse {
+            Json(ApiResponse::Error {
                 status: "success".to_string(),
-                message: Some("No new nodes to remove.".to_string()),
+                message: "No new nodes to remove.".to_string(),
             }),
         );
     }
@@ -246,18 +252,18 @@ async fn remove_heavy_nodes_handler(
             match app.raft.client_write(request).await {
                 Ok(_response) => (
                     StatusCode::OK,
-                    Json(HeavyNodesResponse {
+                    Json(ApiResponse::Success(StandardResponse {
                         status: "success".to_string(),
                         message: None,
-                    }),
+                    })),
                 ),
                 Err(e) => {
                     error!("Failed to write RemoveNodes to Raft: {}", e);
                     (
                         StatusCode::INTERNAL_SERVER_ERROR,
-                        Json(HeavyNodesResponse {
+                        Json(ApiResponse::Error {
                             status: "error".to_string(),
-                            message: Some(format!("Raft error: {}", e)),
+                            message: format!("Raft error: {}", e),
                         }),
                     )
                 }
@@ -267,9 +273,9 @@ async fn remove_heavy_nodes_handler(
             error!("Failed to write batch to Redis: {}. Nodes will not be removed.", e);
             (
                 StatusCode::INTERNAL_SERVER_ERROR,
-                Json(HeavyNodesResponse {
+                Json(ApiResponse::Error {
                     status: "error".to_string(),
-                    message: Some(format!("Redis error: {}", e)),
+                    message: format!("Redis error: {}", e),
                 }),
             )
         }
@@ -330,12 +336,6 @@ struct TxRead {
     func: String,
 }
 
-#[derive(Deserialize, Serialize)]
-struct AddTxResponse {
-    status: String,
-    message: Option<String>,
-}
-
 #[derive(Serialize)]
 struct PoolResponse {
     status: String,
@@ -367,14 +367,6 @@ struct FullGraphResponse {
 #[derive(Deserialize, Serialize, Clone, Debug)]
 pub struct HeavyNodesRequest {
     pub nodes: Vec<Arc<str>>,
-}
-
-// NEW: Response for the heavy nodes submission.
-// `pub` allows it to be imported by `processor.rs`.
-#[derive(Deserialize, Serialize, Debug)]
-pub struct HeavyNodesResponse {
-    pub status: String,
-    pub message: Option<String>,
 }
 
 pub async fn start_server(app: App, _addr: String, port: String) -> Result<(), Box<dyn std::error::Error>> {

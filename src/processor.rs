@@ -7,7 +7,7 @@ use crate::NodeId;
 use crate::raft;
 use raft::store::StateMachineStore;
 use raft::typ::Raft;
-use crate::server::{HeavyNodesRequest, HeavyNodesResponse};
+use crate::server::{HeavyNodesRequest, StandardResponse};
 use rand::seq::SliceRandom;
 use crate::web::{Router, ApiRouterError};
 
@@ -148,7 +148,7 @@ pub async fn start_processor(sm: Arc<StateMachineStore>, raft: Raft, node_id: No
             let req = HeavyNodesRequest { nodes: heavy_nodes };
 
             // Отправляем запрос лидеру
-            match router.send::<_, HeavyNodesResponse>(&leader_addr, "/remove_heavy_nodes", req).await {
+            match router.send::<_, StandardResponse>(&leader_addr, "/remove_heavy_nodes", req).await {
             Ok(res) => {
                 debug!("Successfully submitted heavy nodes to the leader: {:?}", res.message);
             }
