@@ -3,10 +3,7 @@
     "hash": "1cace26889072316f109df9229011ceb35015b19e31c5d5e533cf6ed5c684e0d908de464c646ac626c262c7769f89d9c137458a124813472668e4189fbb7e758",
     "parents": [],
     "data": {
-      "parents": [
-        "0",
-        "1"
-      ],
+      "prnts": [],
       "credit": "",
       "debit": "Hm4GGGtBGiLzHoVSTvXqz5JoV9JXqJWiYrZvXp6GCy4L",
       "amount": 500000000000000,
@@ -20,10 +17,7 @@
     "hash": "bb4041d38e1c807185465a653ba8b93ab5b072874b3433ab714a56038f6eefd2344b0c653555a66780843b7db7f4115c5ffb0da85fc2b954146e14426ba4eb92",
     "parents": [],
     "data": {
-      "parents": [
-        "0",
-        "1"
-      ],
+      "prnts": [],
       "credit": "",
       "debit": "RvCcJWKYpoEXGm6N72kDj3dA8zTxGTMSBpCLSKcJvdR",
       "amount": 330000000000000,
@@ -37,10 +31,7 @@
     "hash": "55c0fb0277468acfa453a75076d6d4be1f0f8e8da2ff2a58128892cb39f8c63361dbae8b136deecc4467bcb91aea9bf3e2951f19323d85e4f5e23de4d44fb756",
     "parents": [],
     "data": {
-      "parents": [
-        "0",
-        "1"
-      ],
+      "prnts": [],
       "credit": "",
       "debit": "2RAHCZg7SfyLY6x5uLmtDh1tNbZr4w5NTPMWXpHrqdyc",
       "amount": 250000000000000,

@@ -6,7 +6,7 @@ use tracing_subscriber;
 use dagdb::server;
 use dagdb::start_raft;
 use dagdb::processor;
-use dagdb::router::Router;
+use dagdb::web::Router;
 
 use clap::Parser;
 

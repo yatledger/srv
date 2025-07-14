@@ -22,18 +22,20 @@ use raft::typ::*;
 use raft::api::*;
 use raft::command::{Request};
 
+use crate::web::{ApiResponse};
+
 #[axum_macros::debug_handler]
 async fn add_tx(
     State(app): State<App>,
     Json(payload): Json<TxRead>,
-) -> (StatusCode, Json<AddTxResponse>) {
+) -> (StatusCode, Json<ApiResponse<AddTxResponse>>) {
 
     if let Err(err) = validate_parents(&payload.tx.prnts) {
         return (
             StatusCode::BAD_REQUEST,
-            Json(AddTxResponse {
+            Json(ApiResponse::Error {
                 status: "error".to_string(),
-                message: Some(err),
+                message: err,
             }),
         );
     }
@@ -46,9 +48,9 @@ async fn add_tx(
             error!("No leader found for node {}", app.id);
             return (
                 StatusCode::SERVICE_UNAVAILABLE,
-                Json(AddTxResponse {
+                Json(ApiResponse::Error {
                     status: "error".to_string(),
-                    message: Some("No leader available".to_string()),
+                    message: "No leader available".to_string(),
                 }),
             );
         }
@@ -62,18 +64,19 @@ async fn add_tx(
         .expect("NO LEADER ADDR");
 
     // Перенаправляем запрос лидеру
-    match app.router.send::<_, AddTxResponse>(leader_id, leader_addr.clone(), "/add", payload).await {
+    match app.router.send::<_, AddTxResponse>(&leader_addr, "/add", payload).await {
         Ok(response) => {
-            debug!("Sent to leader at {}", leader_addr);
-            (StatusCode::OK, Json(response))
+            debug!("Successfully forwarded to leader at {}", leader_addr);
+            (StatusCode::OK, Json(ApiResponse::Success(response)))
         }
         Err(e) => {
-            error!("Failed to forward request to leader {}: {}", leader_addr, e);
+            //TODO сделать ошибки как в processor
+            error!("Failed to forward request to leader: {:?}", e);
             (
                 StatusCode::INTERNAL_SERVER_ERROR,
-                Json(AddTxResponse {
+                Json(ApiResponse::Error {
                     status: "error".to_string(),
-                    message: Some(format!("Failed to contact leader: {}", e)),
+                    message: "Failed to contact leader".to_string(),
                 }),
             )
         }
@@ -236,6 +239,7 @@ async fn remove_heavy_nodes_handler(
     let redis_result: redis::RedisResult<()> = redis_pipe.query_async(&mut redis).await;
     match redis_result {
         Ok(_) => {
+            info!("{} heavy nodes will be removed.", nodes_to_remove.len());
             // Формируем запрос для Raft
             let request = Request::Remove { nodes: nodes_to_remove };
             // Отправляем команду на удаление в Raft

@@ -3,7 +3,7 @@ use std::sync::Arc;
 use redis::aio::ConnectionManager;
 
 use super::typ::Raft;
-use super::router::Router;
+use crate::web::Router;
 use super::store::StateMachineStore;
 use crate::NodeId;
 

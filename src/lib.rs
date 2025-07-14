@@ -10,14 +10,15 @@ mod graph;
 mod raft;
 pub mod processor;
 pub mod server;
+pub mod web;
 pub mod utils;
 
 use raft::app::App;
 use raft::typ;
+use raft::router::Router as RaftRouter;
 use raft::network::NetworkFactory;
 use raft::command::{Request, Response};
 use raft::store::{StateMachineStore, StateMachineData};
-pub use raft::router;
 
 // Псевдоним для списка смежности графа: узел -> список его детей или родителей.
 pub type Adjacency = HashMap<Arc<str>, Vec<Arc<str>>>;
@@ -61,14 +62,15 @@ pub async fn start_raft(node_id: NodeId, http_addr: String) -> (typ::Raft, App) 
 
     // Create a instance of where the state machine data will be stored.
     let state_machine_store = Arc::new(StateMachineStore::default());
-    let network = NetworkFactory {};
+    let raft_router = RaftRouter::new();
+    let network = NetworkFactory::new(raft_router);
 
     // Create a local raft instance.
     let raft = openraft::Raft::new(node_id, config, network, log_store, state_machine_store.clone())
         .await
         .unwrap();
 
-    let router = router::Router::new();
+    let router = web::Router::new();
 
     // Настраиваем подключение к Redis
     let redis_url = "redis://:REDACTED_ROTATED_SECRET@localhost/0";

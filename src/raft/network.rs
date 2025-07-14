@@ -11,16 +11,26 @@ use super::typ::*;
 use crate::NodeId;
 use crate::TypeConfig;
 
-pub struct NetworkFactory {}
+pub struct NetworkFactory {
+    router: Router,
+}
+
+impl NetworkFactory {
+    pub fn new(router: Router) -> Self {
+        Self { router }
+    }
+}
 
 impl RaftNetworkFactory<TypeConfig> for NetworkFactory {
     type Network = Connection;
 
     async fn new_client(&mut self, target: NodeId, node: &BasicNode) -> Self::Network {
-        let router = Router::default();
-        let addr = node.addr.clone();
 
-        Connection { addr, router, target }
+        Connection {
+            addr: node.addr.clone(),
+            router: self.router.clone(), // <-- Клонируем существующий роутер
+            target,
+        }
     }
 }
 
