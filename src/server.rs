@@ -18,7 +18,6 @@ use crate::Tx;
 use crate::raft;
 use crate::utils::*;
 use crate::app::App;
-use raft::typ::*;
 use raft::api::*;
 use raft::command::Request;
 
@@ -94,7 +93,7 @@ async fn add_tx(
 async fn add_handler(
     State(app): State<App>,
     Json(payload): Json<TxRead>,
-) -> (StatusCode, Json<Result<StandardResponse, RaftError>>) {
+) -> (StatusCode, Json<ApiResponse<StandardResponse>>) {
 
     let tx = payload.tx;
     let sign = payload.sign;
@@ -105,7 +104,7 @@ async fn add_handler(
     match app.raft.client_write(request).await {
         Ok(_response) => (
             StatusCode::OK,
-            Json(Ok(StandardResponse {
+            Json(ApiResponse::Success(StandardResponse {
                 status: "success".to_string(),
                 message: None,
             })),
@@ -114,10 +113,10 @@ async fn add_handler(
             error!("Failed to write to Raft: {}", e);
             (
                 StatusCode::INTERNAL_SERVER_ERROR,
-                Json(Ok(StandardResponse {
+                Json(ApiResponse::Error {
                     status: "error".to_string(),
-                    message: Some(format!("Raft error: {}", e)),
-                })),
+                    message: format!("Raft error: {}", e),
+                })
             )
         }
     }
@@ -202,7 +201,7 @@ async fn remove_heavy_nodes_handler(
         }
     } // MutexGuard освобождается здесь
 
-    // Если нет узлов для удаления, возвращаем успех
+    // TODO подумать как правиль ошибку форматировать. Если нет узлов для удаления, возвращаем успех
     if nodes_to_remove.is_empty() {
         return (
             StatusCode::OK,

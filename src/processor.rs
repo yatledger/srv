@@ -15,7 +15,7 @@ use crate::web::{Router, ApiRouterError};
 // Конфигурация для пересчета весов и очистки
 const UPDATE_INTERVAL: Duration = Duration::from_secs(1); // Интервал пересчета весов и очистки (1 секунда)
 const WEIGHT_THRESHOLD: f64 = 10.0; // Порог веса для удаления узлов
-const BATCH_SIZE: usize = 100; // Количество узлов для проверки за один раз
+const BATCH_SIZE: usize = 500; // Количество узлов для проверки за один раз
 
 // Запускает фоновую задачу для пересчета весов узлов DAG и очистки узлов с весами выше порога
 pub async fn start_processor(sm: Arc<StateMachineStore>, raft: Raft, node_id: NodeId, router: Router) {
@@ -49,9 +49,11 @@ pub async fn start_processor(sm: Arc<StateMachineStore>, raft: Raft, node_id: No
             }
         };
 
-        let (nodes_to_process, dag) = {
+        let (nodes_to_process, total, dag) = {
             let state_machine = sm.state_machine.lock().unwrap();
             let mut all_nodes = state_machine.dag.get_node_keys();
+
+            let total = all_nodes.len();
 
             if all_nodes.is_empty() {
                 continue;
@@ -61,10 +63,10 @@ pub async fn start_processor(sm: Arc<StateMachineStore>, raft: Raft, node_id: No
             all_nodes.shuffle(&mut rand::rng());
             all_nodes.truncate(BATCH_SIZE.min(all_nodes.len()));
             
-            (all_nodes, state_machine.dag.clone()) // TODO: сделать так везде. Клонируем DAG, чтобы освободить блокировку
+            (all_nodes, total, state_machine.dag.clone()) // TODO: сделать так везде. Клонируем DAG, чтобы освободить блокировку
         };
 
-        info!("nodes_to_process {}", nodes_to_process.len());
+        info!("nodes_to_process {} / {}", nodes_to_process.len(), total);
 
         // Фильтруем узлы, чтобы оставить только те, все ИЗНАЧАЛЬНЫЕ родители которых уже удалены.
         let eligible_nodes_for_cleanup: Vec<Arc<str>> = nodes_to_process
@@ -73,9 +75,7 @@ pub async fn start_processor(sm: Arc<StateMachineStore>, raft: Raft, node_id: No
                 if let Some(node) = dag.get_nodes().get(node_hash) {
                     // Извлекаем `prnts` из поля `data`
                     if let Some(prnts_value) = node.data.get("prnts") {
-                        info!("prnts_value: {:?}", prnts_value);
                         if let Some(prnts_array) = prnts_value.as_array() {
-                            info!("prnts_array: {:?}", prnts_array);
                             // Если массив пустой, узел (например, генезис) подходит для удаления
                             if prnts_array.is_empty() {
                                 true
