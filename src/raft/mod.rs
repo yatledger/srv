@@ -1,5 +1,4 @@
 pub mod api;
-pub mod app;
 pub mod command;
 pub mod log;
 pub mod network;

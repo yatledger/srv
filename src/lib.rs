@@ -8,12 +8,13 @@ use redis::aio::ConnectionManager;
 
 mod graph;
 mod raft;
+pub mod app;
 pub mod processor;
 pub mod server;
 pub mod web;
 pub mod utils;
 
-use raft::app::App;
+use crate::app::App;
 use raft::typ;
 use raft::router::Router as RaftRouter;
 use raft::network::NetworkFactory;

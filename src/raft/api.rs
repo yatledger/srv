@@ -11,7 +11,7 @@ use openraft::error::decompose::DecomposeResult;
 
 use crate::raft;
 use crate::NodeId;
-use raft::app::{App};
+use crate::app::App;
 use raft::typ::*;
 use raft::decode;
 

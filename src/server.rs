@@ -17,7 +17,7 @@ use redis::pipe;
 use crate::Tx;
 use crate::raft;
 use crate::utils::*;
-use raft::app::{App};
+use crate::app::App;
 use raft::typ::*;
 use raft::api::*;
 use raft::command::{Request};

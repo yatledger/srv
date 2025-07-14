@@ -2,9 +2,11 @@ use std::sync::Arc;
 
 use redis::aio::ConnectionManager;
 
-use super::typ::Raft;
 use crate::web::Router;
-use super::store::StateMachineStore;
+use crate::raft::{
+    store::StateMachineStore,
+    typ::Raft,
+};
 use crate::NodeId;
 
 /// Representation of an application state.
