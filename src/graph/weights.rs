@@ -3,6 +3,7 @@ use std::sync::Arc;
 use rayon::prelude::*; // Для параллельной обработки
 use rayon::ThreadPoolBuilder;
 use num_cpus;
+use serde::Serialize;
 use crate::graph::dag::Node;
 
 #[derive(Debug, Clone)]
@@ -12,10 +13,10 @@ pub struct NodeInfo {
     pub weight: f64,
 }
 
-#[derive(Debug, Clone)]
-pub struct NodeWeight {
+#[derive(Debug, Clone, Serialize)]
+pub struct NodeDepth {
     pub node: Arc<str>,
-    pub weight: f64,
+    pub depth: usize,
 }
 
 /// Вычисляет вес узла по простой формуле: 1/depth
@@ -74,7 +75,7 @@ fn find_descendants_with_depth_and_weight(
     let mut visited: HashSet<Arc<str>> = HashSet::new();
     let mut queue: VecDeque<(Arc<str>, usize)> = VecDeque::new();
     
-    // REFACTORED: Получаем детей из `GraphNode` в `nodes_map`.
+    // Получаем детей из `GraphNode` в `nodes_map`.
     if let Some(start_node_obj) = nodes_map.get(start_node) {
         for child in &start_node_obj.children {
             queue.push_back((child.clone(), 1));
@@ -91,7 +92,7 @@ fn find_descendants_with_depth_and_weight(
                 weight,
             });
             
-            // REFACTORED: Получаем детей текущего узла из `nodes_map`.
+            // Получаем детей текущего узла из `nodes_map`.
             if let Some(current_node_obj) = nodes_map.get(current.as_ref()) {
                 for child in &current_node_obj.children {
                     if !visited.contains(child) {
@@ -103,4 +104,71 @@ fn find_descendants_with_depth_and_weight(
     }
 
     descendants
+}
+
+/// Вычисляет глубину каждого узла в DAG относительно корневых узлов
+/// Глубина корневых узлов (без родителей) = 0
+/// Глубина остальных узлов = максимальная глубина родителей + 1
+pub fn compute_node_depths(nodes_map: &HashMap<Arc<str>, Node>) -> HashMap<Arc<str>, usize> {
+    let mut depths: HashMap<Arc<str>, usize> = HashMap::new();
+    let mut in_degree: HashMap<Arc<str>, usize> = HashMap::new();
+    let mut queue: VecDeque<Arc<str>> = VecDeque::new();
+
+    // Инициализация: подсчитываем входящие степени для каждого узла
+    for (node_id, node) in nodes_map {
+        in_degree.insert(node_id.clone(), node.parents.len());
+        
+        // Если у узла нет родителей - он корневой, глубина = 0
+        if node.parents.is_empty() {
+            depths.insert(node_id.clone(), 0);
+            queue.push_back(node_id.clone());
+        }
+    }
+
+    // Топологическая сортировка с вычислением глубины
+    while let Some(current_node) = queue.pop_front() {
+        let current_depth = depths[&current_node];
+        
+        // Получаем узел из nodes_map
+        if let Some(node) = nodes_map.get(&current_node) {
+            // Обрабатываем всех детей текущего узла
+            for child in &node.children {
+                // Уменьшаем входящую степень ребенка
+                if let Some(degree) = in_degree.get_mut(child) {
+                    *degree -= 1;
+                    
+                    // Обновляем глубину ребенка (берем максимум из уже известной глубины и новой)
+                    let new_depth = current_depth + 1;
+                    depths.entry(child.clone())
+                        .and_modify(|d| *d = (*d).max(new_depth))
+                        .or_insert(new_depth);
+                    
+                    // Если все родители ребенка обработаны, добавляем его в очередь
+                    if *degree == 0 {
+                        queue.push_back(child.clone());
+                    }
+                }
+            }
+        }
+    }
+
+    depths
+}
+
+/// Возвращает список всех узлов с их глубинами, отсортированный по глубине
+pub fn get_nodes_by_depth(nodes_map: &HashMap<Arc<str>, Node>) -> Vec<NodeDepth> {
+    let depths = compute_node_depths(nodes_map);
+    
+    let mut result: Vec<NodeDepth> = depths
+        .into_iter()
+        .map(|(node, depth)| NodeDepth { node, depth })
+        .collect();
+    
+    // Сортируем по глубине, затем по имени узла для стабильности
+    result.sort_by(|a, b| {
+        a.depth.cmp(&b.depth)
+            .then_with(|| a.node.cmp(&b.node))
+    });
+    
+    result
 }

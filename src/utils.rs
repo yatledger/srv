@@ -48,7 +48,7 @@ fn process_value(value: &Value) -> Result<String, String> {
 
 pub fn validate_parents(parents: &Vec<Arc<str>>) -> Result<(), String> {
     // Check length constraints
-    if parents.len() < 2 || parents.len() > 25 {
+    if parents.len() < 2 || parents.len() > 100 {
         return Err("parents must have between 2 and 25 elements".to_string());
     }
     // Check for non-empty strings

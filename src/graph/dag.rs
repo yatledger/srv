@@ -9,7 +9,7 @@ use serde::de::{Deserializer, MapAccess, Visitor};
 use std::fmt;
 use serde_json::{Value, json};
 use tracing::{info, error};
-use crate::graph::weights::{NodeWeight, NodeInfo, compute_descendants_with_depth_and_weight};
+use crate::graph::weights::{NodeInfo, NodeDepth, compute_descendants_with_depth_and_weight, get_nodes_by_depth};
 use crate::Adjacency;
 use crate::Tx;
 use crate::utils::*;
@@ -30,7 +30,13 @@ pub struct Node {
     pub parents: HashSet<Arc<str>>,
     pub children: HashSet<Arc<str>>,
     pub data: Value,
-    pub weight: f64,
+    pub time: u64,
+}
+
+#[derive(Debug, Clone)]
+pub struct NodeTime {
+    pub node: Arc<str>,
+    pub time: u64,
 }
 
 #[derive(Debug, Clone)]
@@ -66,13 +72,16 @@ impl DAG {
                     for tx in &transactions {
                         let hash = Arc::from(tx.hash.as_str());
                         let data = tx.data.clone();
-                        
+                        let timestamp = std::time::SystemTime::now()
+                            .duration_since(std::time::UNIX_EPOCH)
+                            .map(|d| d.as_micros() as u64)
+                            .unwrap_or(0);
                         // NEW: Создаем полноценный GraphNode для генезис-узла.
                         let genesis_node = Node {
                             parents: HashSet::new(),
                             children: HashSet::new(),
                             data,
-                            weight: 0.0, // Вес будет рассчитан ниже
+                            time: timestamp,
                         };
                         dag.nodes.insert(hash, genesis_node);
                     }
@@ -166,12 +175,16 @@ impl DAG {
                 "msg": msg,   
             }
         });
+        let timestamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_micros() as u64)
+            .unwrap_or(0);
         // Создаем и вставляем новый узел
         let new_node = Node {
             parents: existing_parents,
             children: HashSet::new(),
             data: data_json,
-            weight: 0.0, // Вес будет пересчитан позже
+            time: timestamp,
         };
         self.nodes.insert(tx_hash, new_node);
 
@@ -213,15 +226,18 @@ impl DAG {
             .collect()
     }
 
-    // Метод теперь "на лету" собирает веса всех узлов.
-    pub fn get_weights(&self) -> Vec<NodeWeight> {
-        self.nodes
+    pub fn get_time(&self) -> Vec<NodeTime> {
+        // Собираем узлы с их временными метками в вектор
+        let mut nodes = self.nodes
             .iter()
-            .map(|(hash, node)| NodeWeight {
+            .map(|(hash, node)| NodeTime {
                 node: hash.clone(),
-                weight: node.weight,
+                time: node.time,
             })
-            .collect()
+            .collect::<Vec<NodeTime>>();
+        // Сортируем узлы по времени по возрастанию
+        nodes.sort_by(|a, b| a.time.cmp(&b.time));
+        nodes
     }
 
     // Возвращает `true`, если узел существует в `nodes`.
@@ -276,6 +292,11 @@ impl DAG {
         compute_descendants_with_depth_and_weight(&self.nodes, &node_keys)
     }
 
+    /// Возвращает все узлы с их глубинами, отсортированные по глубине
+    pub fn get_nodes_by_depth(&self) -> Vec<NodeDepth> {
+        get_nodes_by_depth(&self.nodes)
+    }
+
     pub fn compute_weights_for_batch(&self, nodes: &[Arc<str>]) -> HashMap<Arc<str>, f64> {
        // Преобразуем срез узлов в HashSet для совместимости с compute_descendants_with_depth_and_weight
        let nodes_to_process: HashSet<Arc<str>> = nodes.iter().cloned().collect();
@@ -301,7 +322,7 @@ impl Serialize for Node {
         map.serialize_entry("parents", &self.parents.iter().map(|arc| arc.as_ref()).collect::<Vec<&str>>())?;
         map.serialize_entry("children", &self.children.iter().map(|arc| arc.as_ref()).collect::<Vec<&str>>())?;
         map.serialize_entry("data", &self.data)?;
-        map.serialize_entry("weight", &self.weight)?;
+        map.serialize_entry("time", &self.time)?;
         map.end()
     }
 }
@@ -328,7 +349,7 @@ impl<'de> Deserialize<'de> for Node {
                 let mut parents = None;
                 let mut children = None;
                 let mut data = None;
-                let mut weight = None;
+                let mut time = None;
 
                 while let Some(key) = map.next_key::<String>()? {
                     match key.as_str() {
@@ -341,7 +362,7 @@ impl<'de> Deserialize<'de> for Node {
                             children = Some(children_vec.into_iter().map(Arc::from).collect());
                         }
                         "data" => data = Some(map.next_value::<Value>()?),
-                        "weight" => weight = Some(map.next_value()?),
+                        "time" => time = Some(map.next_value()?),
                         _ => { let _ = map.next_value::<serde_json::Value>()?; }
                     }
                 }
@@ -350,12 +371,12 @@ impl<'de> Deserialize<'de> for Node {
                     parents: parents.unwrap_or_default(),
                     children: children.unwrap_or_default(),
                     data: data.ok_or_else(|| serde::de::Error::missing_field("data"))?,
-                    weight: weight.unwrap_or(0.0),
+                    time: time.unwrap_or(0),
                 })
             }
         }
 
-        deserializer.deserialize_struct("Node", &["parents", "children", "data", "weight"], NodeVisitor)
+        deserializer.deserialize_struct("Node", &["parents", "children", "data", "time"], NodeVisitor)
     }
 }
 

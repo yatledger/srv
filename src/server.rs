@@ -9,8 +9,6 @@ use std::sync::Arc;
 use serde::{Deserialize, Serialize};
 use tokio::net::TcpListener;
 use tracing::{info, error, debug};
-use rand::seq::SliceRandom;
-use rand::rng;
 
 use redis::pipe;
 
@@ -22,6 +20,7 @@ use raft::api::*;
 use raft::command::Request;
 
 use crate::web::ApiResponse;
+use crate::graph::weights::NodeDepth;
 
 #[derive(Deserialize, Serialize, Debug)]
 pub struct StandardResponse {
@@ -122,27 +121,43 @@ async fn add_handler(
     }
 }
 
+
 async fn pool_handler(
     State(app): State<App>,
 ) -> (StatusCode, Json<PoolResponse>) {
-    let state_machine = app.state_machine.state_machine.lock().unwrap();
-    let mut nodes = state_machine.dag.get_weights().clone();
-    nodes.sort_by(|a, b| a.weight.partial_cmp(&b.weight).unwrap_or(std::cmp::Ordering::Equal));
+    let state_machine = app.state_machine.state_machine.read().await;
+    
+    /*
+    // Получаем все узлы с их глубинами, уже отсортированные по глубине
+    let nodes_with_time = state_machine.dag.get_time();
+    
+    // Преобразуем в Vec<String> для ответа (узлы уже отсортированы по глубине)
+    let mut nodes: Vec<String> = nodes_with_time
+        .into_iter()
+        .map(|node_time| String::from(&*node_time.node))
+        .collect();
+    */
+    // Получаем список смежности родителей через метод get_parents
+    let parents_map = state_machine.dag.get_parents();
+    // Собираем узлы и подсчитываем количество активных родителей для каждого
+    let mut nodes = state_machine.dag.get_node_keys().into_iter().map(|node| {
+        let active_parents = parents_map.get(&node)
+            .map(|parents| parents.len())
+            .unwrap_or(0);
+        (node, active_parents)
+    }).collect::<Vec<_>>();
+    // Сортируем по возрастанию числа активных родителей (меньше родителей — выше приоритет)
+    nodes.sort_by(|a, b| a.1.cmp(&b.1));
+    // Преобразуем в Vec<String> для ответа
+    let mut nodes: Vec<String> = nodes.into_iter().map(|(node, _)| String::from(&*node)).collect();
 
-    // Извлекаем только хэши узлов.
-    let mut nodes: Vec<String> = nodes.into_iter().map(|node| String::from(&*node.node)).collect();
-    // Выполняем обрезку и перемешивание только если nodes.len() > 10.
     if nodes.len() > 10 {
-        // Обрезаем список до nodes.len() / 3.
-        let first_truncate_len = nodes.len() / 3;
-        nodes.truncate(first_truncate_len);
-        // Перемешиваем список узлов.
-        nodes.shuffle(&mut rng());
-        // Вычисляем длину обрезанного списка как округлённый квадратный корень от числа узлов.
         let target_len = (nodes.len() as f64).sqrt().ceil() as usize;
-        // Обрезаем список до target_len, если он длиннее.
         nodes.truncate(target_len);
-            }
+    } else {
+        nodes.truncate(2);
+    }
+    
     (
         StatusCode::OK,
         Json(PoolResponse {
@@ -189,7 +204,7 @@ async fn remove_heavy_nodes_handler(
     let mut nodes_to_remove: Vec<Arc<str>> = Vec::new();
     {
         // Блокируем state_machine для проверки поля added
-        let state_machine = app.state_machine.state_machine.lock().unwrap();
+        let state_machine = app.state_machine.state_machine.read().await;
         for node in payload.nodes.iter() {
             // Проверяем, отсутствует ли узел в added
             if !state_machine.dag.is_node_added(node) {
@@ -216,7 +231,7 @@ async fn remove_heavy_nodes_handler(
     let mut redis_pipe = pipe();
     {
         // Блокируем state_machine для получения данных узлов
-        let state_machine = app.state_machine.state_machine.lock().unwrap();
+        let state_machine = app.state_machine.state_machine.read().await;
         for node in &nodes_to_remove {
             // Получаем данные узла из DAG
             if let Some(node_data) = state_machine.dag.get_node_data(node) {
@@ -284,45 +299,13 @@ async fn remove_heavy_nodes_handler(
 async fn get_full_graph_handler(
     State(app): State<App>,
 ) -> (StatusCode, Json<FullGraphResponse>) {
-    let state_machine = app.state_machine.state_machine.lock().unwrap();
-    let mut nodes = state_machine.dag.get_weights().clone();
-    nodes.sort_by(|a, b| {
-        b.weight.partial_cmp(&a.weight)
-            .unwrap_or(std::cmp::Ordering::Equal)
-            .then_with(|| a.node.cmp(&b.node))
-    });
-    // Получаем потомков для всех узлов заранее, чтобы избежать повторных вычислений.
-    let descendants_map = state_machine.dag.compute_descendants_with_depth_and_weight();
-
-    // Собираем информацию о каждом узле: хэш, вес, потомки.
-    let graph = nodes
-        .into_iter()
-        .map(|node| {
-            // Получаем потомков узла из descendants_map.
-            let descendants = descendants_map
-                .get(&node.node)
-                .unwrap_or(&Vec::new()) // Если нет потомков, возвращаем пустой вектор.
-                .iter()
-                .map(|descendant| DescendantInfo {
-                    hash: String::from(&*descendant.node),
-                    depth: descendant.depth,
-                    weight: descendant.weight,
-                })
-                .collect::<Vec<DescendantInfo>>();
-
-            NodeFullInfo {
-                hash: String::from(&*node.node),
-                weight: node.weight,
-                descendants,
-            }
-        })
-        .collect::<Vec<NodeFullInfo>>();
-
+    let state_machine = app.state_machine.state_machine.read().await;
+    let nodes = state_machine.dag.get_nodes_by_depth();
     (
         StatusCode::OK,
         Json(FullGraphResponse {
             status: "success".to_string(),
-            graph,
+            nodes,
             message: None,
         }),
     )
@@ -343,23 +326,9 @@ struct PoolResponse {
 }
 
 #[derive(Serialize)]
-struct NodeFullInfo {
-    hash: String, // Хэш узла.
-    weight: f64, // Финальный вес узла.
-    descendants: Vec<DescendantInfo>, // Список потомков с глубиной и весом.
-}
-
-#[derive(Serialize)]
-struct DescendantInfo {
-    hash: String, // Хэш потомка.
-    depth: usize, // Глубина относительно родителя.
-    weight: f64, // Вес потомка.
-}
-
-#[derive(Serialize)]
 struct FullGraphResponse {
     status: String,
-    graph: Vec<NodeFullInfo>,
+    nodes: Vec<NodeDepth>,
     message: Option<String>,
 }
 

@@ -16,11 +16,6 @@ pub enum Request {
     Remove {
         nodes: Vec<Arc<str>>,
     },
-    // Обновление веса узла (если требуется согласование весов)
-    Weight {
-        hash: Arc<str>,
-        weight: f64,
-    },
 }
 /*
 impl Request {
