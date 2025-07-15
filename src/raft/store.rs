@@ -125,7 +125,7 @@ impl RaftStateMachine<TypeConfig> for Arc<StateMachineStore> {
             match entry.payload {
                 EntryPayload::Blank => res.push(Response { value: None }),
                 EntryPayload::Normal(ref req) => match req {
-                    Request::Add { tx, sign, func } => {
+                    Request::Add { hash, tx, sign, func } => {
                         // --- ВАША ЛОГИКА ВАЛИДАЦИИ ---
                         // Например, проверяем, что все родители существуют
                         // let parents_exist = tx.prnts.iter().all(|p| sm.dag.get_nodes().contains_key(p));
@@ -138,7 +138,7 @@ impl RaftStateMachine<TypeConfig> for Arc<StateMachineStore> {
                             res.push(Response { value: Some("Error: One or more parents not found.".to_string()) });
                         } else {
                             // Проверка пройдена. Меняем DAG.
-                            let _ = sm.dag.add_node_with_parents(tx.clone(), sign.clone(), func.clone());
+                            let _ = sm.dag.add_node_with_parents(hash.clone(), tx.clone(), sign.clone(), func.clone());
                             res.push(Response { value: Some("Ok".to_string()) });
                         }
                     }

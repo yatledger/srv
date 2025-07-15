@@ -12,10 +12,6 @@ use tracing::{info, error};
 use crate::graph::weights::{NodeInfo, NodeDepth, compute_descendants_with_depth_and_weight, get_nodes_by_depth};
 use crate::Adjacency;
 use crate::Tx;
-use crate::utils::*;
-use ed25519_dalek::{VerifyingKey, Signature, Verifier};
-use base58::FromBase58;
-use hex::FromHex;
 
 
 // Структура для десериализации JSON с генезис-транзакциями.
@@ -96,55 +92,15 @@ impl DAG {
         dag
     }
 
-    pub fn add_node_with_parents(&mut self, tx: Tx, sign: String, func: String) -> Result<(), String> {
-
-        // Validate parents
-        if let Err(err) = validate_parents(&tx.prnts) {
-            return Err(err);
-        }
-
-        // Проверяем, что каждый родитель существует либо в nodes, либо в added
-        for parent in &tx.prnts {
-            if !self.nodes.contains_key(parent.as_ref()) && !self.added.contains_key(parent.as_ref()) {
-                return Err(format!("Parent {} does not exist in nodes or added", parent.as_ref()));
-            }
-        }
+    pub fn add_node_with_parents(&mut self, tx_hash: Arc<str>, tx: Tx, sign: String, func: String) -> Result<(), String> {
 
         let (ca, to, val, msg) = if func == "transferToken" {
-            let TxVar { ca, to, val, msg } = extract_from_var_struct(&tx)?;
+            // .unwrap() здесь безопасен, если мы доверяем валидации на входе
+            let TxVar { ca, to, val, msg } = extract_from_var_struct(&tx).unwrap();
             (Some(ca), Some(to), Some(val), Some(msg))
         } else {
             (None, None, None, None)
         };
-        // Проверка подписи
-        let addr_bytes = tx.addr.from_base58()
-            .map_err(|_| "Invalid base58 in signature verification".to_string())?;
-        let addr_array: [u8; 32] = addr_bytes
-            .try_into()
-            .map_err(|_| "Invalid Ed25519 key length".to_string())?;
-        let verify_key = VerifyingKey::from_bytes(&addr_array)
-            .map_err(|_| "Invalid Ed25519 public key".to_string())?;
-
-        // Получаем отсортированную строку из полей Tx
-        let tx_hash_bytes = ordered_sum(&tx)
-            .map_err(|e| format!("Ordered sum error: {}", e))?;
-
-        let tx_hash = Arc::from(tx_hash_bytes.to_hex().to_string());
-
-        if self.nodes.contains_key(&tx_hash) {
-            return Err("Node already exists".to_string());
-        }
-
-        // Декодируем подпись из hex
-        let signature_bytes = <[u8; 64]>::from_hex(sign.as_str())
-            .map_err(|_| "Invalid hex for signature".to_string())?;
-        let signature = Signature::try_from(&signature_bytes)
-            .map_err(|_| "Invalid signature format".to_string())?;
-
-        // Проверяем подпись
-        if verify_key.verify(tx_hash_bytes.as_bytes(), &signature).is_err() {
-            return Err("Signature verification failed".to_string());
-        }
         
         let existing_parents: HashSet<Arc<str>> = tx.prnts
             .iter()

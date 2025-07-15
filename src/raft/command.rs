@@ -8,6 +8,7 @@ use crate::Tx;
 pub enum Request {
     // Добавление узла с хэшом, родителями и данными
     Add {
+        hash: Arc<str>,
         tx: Tx,
         sign: String,
         func: String,

@@ -22,10 +22,129 @@ use raft::command::Request;
 use crate::web::ApiResponse;
 use crate::graph::weights::NodeDepth;
 
+use ed25519_dalek::{VerifyingKey, Signature, Verifier};
+use base58::FromBase58;
+use hex::FromHex;
+
 #[derive(Deserialize, Serialize, Debug)]
 pub struct StandardResponse {
     pub status: String,
     pub message: Option<String>,
+}
+
+async fn validate_and_prepare_tx(
+    app: &App,
+    payload: &TxRead,
+) -> Result<Arc<str>, (StatusCode, Json<ApiResponse<StandardResponse>>)> {
+    // Проверка родителей
+    if let Err(err) = validate_parents(&payload.tx.prnts) {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(ApiResponse::Error { status: "error".to_string(), message: err }),
+        ));
+    }
+
+    // Проверка подписи и вычисление хэша
+    let tx_hash_bytes = match ordered_sum(&payload.tx) {
+        Ok(bytes) => bytes,
+        Err(e) => {
+            return Err((
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ApiResponse::Error { status: "error".to_string(), message: format!("Ordered sum error: {}", e) }),
+            ));
+        }
+    };
+    
+    // Проверка самой подписи
+    let signature_bytes = match <[u8; 64]>::from_hex(payload.sign.as_str()) {
+        Ok(bytes) => bytes,
+        Err(_) => {
+            return Err((
+                StatusCode::BAD_REQUEST,
+                Json(ApiResponse::Error { status: "error".to_string(), message: "Invalid hex for signature".to_string() }),
+            ));
+        }
+    };
+
+    let signature = match Signature::try_from(signature_bytes.as_ref()) {
+        Ok(sig) => sig,
+        Err(_) => {
+            return Err((
+                StatusCode::BAD_REQUEST,
+                Json(ApiResponse::Error { status: "error".to_string(), message: "Invalid signature format".to_string() }),
+            ));
+        }
+    };
+    
+    let addr_bytes = match payload.tx.addr.from_base58() {
+         Ok(bytes) => bytes,
+         Err(_) => {
+            return Err((
+                StatusCode::BAD_REQUEST,
+                Json(ApiResponse::Error { status: "error".to_string(), message: "Invalid base58 in signature verification".to_string() }),
+            ));
+         }
+    };
+
+    let addr_array: [u8; 32] = match addr_bytes.try_into() {
+        Ok(arr) => arr,
+        Err(_) => {
+            return Err((
+                StatusCode::BAD_REQUEST,
+                Json(ApiResponse::Error { status: "error".to_string(), message: "Invalid Ed25519 key length".to_string() }),
+            ));
+        }
+    };
+
+    let verify_key = match VerifyingKey::from_bytes(&addr_array) {
+        Ok(key) => key,
+        Err(_) => {
+            return Err((
+                StatusCode::BAD_REQUEST,
+                Json(ApiResponse::Error { status: "error".to_string(), message: "Invalid Ed25519 public key".to_string() }),
+            ));
+        }
+    };
+
+    if verify_key.verify(tx_hash_bytes.as_bytes(), &signature).is_err() {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(ApiResponse::Error { status: "error".to_string(), message: "Signature verification failed".to_string() }),
+        ));
+    }
+
+    let tx_hash = Arc::from(tx_hash_bytes.to_hex().to_string());
+
+    // Блокируем state machine для проверок, зависящих от состояния (существование узлов)
+    let state_machine = app.state_machine.state_machine.read().await;
+
+    // Проверяем, что узел еще не существует
+    if state_machine.dag.contains_node(&tx_hash) {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(ApiResponse::Error { status: "error".to_string(), message: "Node already exists".to_string() }),
+        ));
+    }
+    
+    // Проверяем, что каждый родитель существует
+    for parent in &payload.tx.prnts {
+        if !state_machine.dag.contains_node(parent) && !state_machine.dag.is_node_added(parent) {
+             return Err((
+                StatusCode::BAD_REQUEST,
+                Json(ApiResponse::Error { status: "error".to_string(), message: format!("Parent {} does not exist", parent) }),
+            ));
+        }
+    }
+
+    Ok(tx_hash)
+}
+
+#[derive(Deserialize, Serialize)]
+struct InternalAddRequest {
+    hash: Arc<str>,
+    tx: Tx,
+    sign: String,
+    func: String,
 }
 
 #[axum_macros::debug_handler]
@@ -34,15 +153,10 @@ async fn add_tx(
     Json(payload): Json<TxRead>,
 ) -> (StatusCode, Json<ApiResponse<StandardResponse>>) {
 
-    if let Err(err) = validate_parents(&payload.tx.prnts) {
-        return (
-            StatusCode::BAD_REQUEST,
-            Json(ApiResponse::Error {
-                status: "error".to_string(),
-                message: err,
-            }),
-        );
-    }
+    let tx_hash = match validate_and_prepare_tx(&app, &payload).await {
+        Ok(hash) => hash,
+        Err(response) => return response,
+    };
 
     let metrics = app.raft.metrics().borrow().clone();
 
@@ -60,6 +174,17 @@ async fn add_tx(
         }
     };
 
+    let internal_payload = InternalAddRequest {
+            hash: tx_hash,
+            tx: payload.tx,
+            sign: payload.sign,
+            func: payload.func,
+        };
+
+    if leader_id == app.id {
+        return add_handler(State(app), Json(internal_payload)).await;
+    }
+
     let leader_addr = metrics
         .membership_config
         .nodes()
@@ -68,7 +193,7 @@ async fn add_tx(
         .expect("NO LEADER ADDR");
 
     // Перенаправляем запрос лидеру
-    match app.router.send::<_, StandardResponse>(&leader_addr, "/add", payload).await {
+    match app.router.send::<_, StandardResponse>(&leader_addr, "/add", internal_payload).await {
         Ok(response) => {
             debug!("Successfully forwarded to leader at {}", leader_addr);
             (StatusCode::OK, Json(ApiResponse::Success(response)))
@@ -91,14 +216,15 @@ async fn add_tx(
 #[axum_macros::debug_handler]
 async fn add_handler(
     State(app): State<App>,
-    Json(payload): Json<TxRead>,
+    Json(payload): Json<InternalAddRequest>,
 ) -> (StatusCode, Json<ApiResponse<StandardResponse>>) {
 
-    let tx = payload.tx;
-    let sign = payload.sign;
-    let func = payload.func;
-
-    let request = Request::Add { tx, sign, func };
+    let request = Request::Add {
+        hash: payload.hash,
+        tx: payload.tx,
+        sign: payload.sign,
+        func: payload.func,
+    };
 
     match app.raft.client_write(request).await {
         Ok(_response) => (
