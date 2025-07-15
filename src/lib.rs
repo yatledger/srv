@@ -15,16 +15,19 @@ pub mod web;
 pub mod utils;
 
 use crate::app::App;
+use raft::log::LogStore;
 use raft::typ;
 use raft::router::Router as RaftRouter;
 use raft::network::NetworkFactory;
 use raft::command::{Request, Response};
 use raft::store::{StateMachineStore, StateMachineData};
+use rocksdb::{DB, Options, ColumnFamilyDescriptor};
+use std::path::Path;
 
 // Псевдоним для списка смежности графа: узел -> список его детей или родителей.
 pub type Adjacency = HashMap<Arc<str>, Vec<Arc<str>>>;
 
-pub use raft::log::LogStore;
+
 
 pub type NodeId = u64;
 
@@ -57,9 +60,25 @@ pub async fn start_raft(node_id: NodeId, http_addr: String) -> (typ::Raft, App) 
     };
 
     let config = Arc::new(config.validate().unwrap());
+    // Create database path for RocksDB
+    let db_path = format!("./raft_data/node_{}", node_id);
+    let db_path = Path::new(&db_path);
+    std::fs::create_dir_all(db_path.parent().unwrap()).expect("Failed to create Raft data directory");
+
+    // Configure and open RocksDB with required column families
+    let mut db_opts = Options::default();
+    db_opts.create_missing_column_families(true);
+    db_opts.create_if_missing(true);
+
+    let meta = ColumnFamilyDescriptor::new("meta", Options::default());
+    let logs = ColumnFamilyDescriptor::new("logs", Options::default());
+
+    let db = DB::open_cf_descriptors(&db_opts, db_path, vec![meta, logs])
+        .expect("Failed to open RocksDB database");
+    let db = Arc::new(db);
 
     // Create a instance of where the Raft logs will be stored.
-    let log_store = LogStore::default();
+    let log_store = LogStore::new(db);
 
     // Create a instance of where the state machine data will be stored.
     let state_machine_store = Arc::new(StateMachineStore::default());

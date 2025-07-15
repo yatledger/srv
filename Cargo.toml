@@ -23,4 +23,6 @@ base58 = "0.2.0"
 hex = "0.4.3"
 itertools = "0.14.0"
 blake3 = "1.8.2"
+rocksdb = "0.23.0"
+byteorder = "1.5.0"
 #anyhow = "1.0.98" кастомные ошибки
