@@ -13,9 +13,9 @@ use crate::web::{Router, ApiRouterError};
 
 
 // Конфигурация для пересчета весов и очистки
-const UPDATE_INTERVAL: Duration = Duration::from_millis(250); // Интервал пересчета весов и очистки (1 секунда)
+const UPDATE_INTERVAL: Duration = Duration::from_millis(1000); // Интервал пересчета весов и очистки (1 секунда)
 const WEIGHT_THRESHOLD: f64 = 5.0; // Порог веса для удаления узлов
-const BATCH_SIZE: usize = 250; // Количество узлов для проверки за один раз
+const BATCH_SIZE: usize = 100; // Количество узлов для проверки за один раз
 
 // Запускает фоновую задачу для пересчета весов узлов DAG и очистки узлов с весами выше порога
 pub async fn start_processor(sm: Arc<StateMachineStore>, raft: Raft, node_id: NodeId, router: Router) {
