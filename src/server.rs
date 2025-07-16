@@ -1,5 +1,5 @@
 use axum::{
-    extract::{Json, State},
+    extract::{Json, State, DefaultBodyLimit},
     http::StatusCode,
     routing::{post, get},
     Router,
@@ -479,6 +479,7 @@ pub async fn start_server(app: App, _addr: String, port: String) -> Result<(), B
         .route("/mng/add-learner", post(add_learner))
         .route("/mng/init", post(init))
         .route("/mng/metrics", post(metrics))
+        .layer(DefaultBodyLimit::max(10 * 1024 * 1024))
         .with_state(app.clone());
 
     let http_addr = "0.0.0.0:".to_string() + &port;

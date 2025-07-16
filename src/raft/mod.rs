@@ -55,23 +55,5 @@ pub mod typ {
     //pub type ClientWriteResponse = openraft::raft::ClientWriteResponse<TypeConfig>;
 }
 
-pub fn decode<T: serde::de::DeserializeOwned>(s: &str) -> T {
-    serde_json::from_str(s).unwrap()
-}
-
-/*
-pub fn encode<T: serde::Serialize>(t: T) -> String {
-    serde_json::to_string(&t).unwrap()
-}
-
-pub use store::StateMachineStore;
-pub use store::StateMachineData;
-pub use log::LogStore;
-pub use network::NetworkFactory;
-pub use app::App;
-pub use store::StateMachineData;
-pub use command::{Request, Response};
-*/
-
 #[cfg(test)]
 mod test;

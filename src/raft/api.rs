@@ -13,7 +13,7 @@ use crate::raft;
 use crate::NodeId;
 use crate::app::App;
 use raft::typ::*;
-use raft::decode;
+use tracing::error;
 
 /*
 async fn add_learner_minimal(
@@ -105,15 +105,31 @@ pub async fn append(
 pub async fn snapshot(
     State(app): State<App>,
     req: String,
-) -> Result<Json<impl serde::Serialize>, StatusCode> {
-    let (vote, snapshot_meta, snapshot_data): (Vote, SnapshotMeta, SnapshotData) = decode(&req);
-    
+) -> Result<Json<impl serde::Serialize>, (StatusCode, String)> {
+    // Проверка на пустой запрос
+    if req.is_empty() {
+        error!("Empty snapshot request");
+        return Err((StatusCode::BAD_REQUEST, "Empty request body".to_string()));
+    }
+
+    // Безопасная десериализация
+    let (vote, snapshot_meta, snapshot_data): (Vote, SnapshotMeta, SnapshotData) = 
+        serde_json::from_str(&req)
+            .map_err(|e| {
+                error!("Failed to deserialize snapshot request: {}", e);
+                (StatusCode::BAD_REQUEST, format!("Invalid JSON: {}", e))
+            })?;
+
     let snapshot = Snapshot {
         meta: snapshot_meta,
         snapshot: snapshot_data,
     };
-    
-    let res = app.raft.install_full_snapshot(vote, snapshot).await;
-    
+
+    let res = app.raft.install_full_snapshot(vote, snapshot).await
+        .map_err(|e| {
+            error!("Failed to install snapshot: {}", e);
+            (StatusCode::INTERNAL_SERVER_ERROR, format!("Snapshot installation failed: {}", e))
+        })?;
+
     Ok(Json(res))
 }
