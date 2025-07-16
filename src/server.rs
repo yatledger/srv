@@ -322,8 +322,6 @@ async fn remove_heavy_nodes_handler(
         );
     }
 
-    info!("Leader received a request to remove {} heavy nodes.", payload.nodes.len());
-
     // Клонируем Redis соединение
     let mut redis = app.redis.clone();
     // Формируем список узлов для удаления, исключая те, что уже есть в added
@@ -381,11 +379,12 @@ async fn remove_heavy_nodes_handler(
         }
     } // MutexGuard освобождается здесь
 
+    info!("{} / {}: request / removed", payload.nodes.len(), nodes_to_remove.len());
+
     // Выполняем пакетную запись в Redis
     let redis_result: redis::RedisResult<()> = redis_pipe.query_async(&mut redis).await;
     match redis_result {
         Ok(_) => {
-            info!("{} heavy nodes will be removed.", nodes_to_remove.len());
             // Формируем запрос для Raft
             let request = Request::Remove { nodes: nodes_to_remove };
             // Отправляем команду на удаление в Raft

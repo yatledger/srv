@@ -2,6 +2,7 @@
 use std::sync::{Arc};
 use tracing::info;
 use tracing_subscriber;
+use tracing_subscriber::fmt::time::ChronoLocal;
 
 use dagdb::server;
 use dagdb::start_raft;
@@ -28,6 +29,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     tracing_subscriber::fmt()
         .with_env_filter("info")
         .with_ansi(true)
+        .with_timer(ChronoLocal::new("%Y-%m-%dT%H:%M:%S%.3fZ".to_string()))
         //.with_target(true)
         //.with_thread_names(true)
         .init();

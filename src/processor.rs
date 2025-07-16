@@ -13,7 +13,7 @@ use crate::web::{Router, ApiRouterError};
 
 
 // Конфигурация для пересчета весов и очистки
-const UPDATE_INTERVAL: Duration = Duration::from_millis(1000); // Интервал пересчета весов и очистки (1 секунда)
+const UPDATE_INTERVAL: Duration = Duration::from_millis(250); // Интервал пересчета весов и очистки (1 секунда)
 const WEIGHT_THRESHOLD: f64 = 5.0; // Порог веса для удаления узлов
 const BATCH_SIZE: usize = 100; // Количество узлов для проверки за один раз
 
@@ -60,10 +60,9 @@ pub async fn start_processor(sm: Arc<StateMachineStore>, raft: Raft, node_id: No
             (all_nodes, state_machine.dag.clone()) // TODO: сделать так везде. Клонируем DAG, чтобы освободить блокировку
         };
 
-        info!("nodes_to_process {}", nodes_to_process.len());
-
+        // TODO подумать как везде вместо clone юзать ссылку
         // Фильтруем узлы, чтобы оставить только те, все ИЗНАЧАЛЬНЫЕ родители которых уже удалены.
-        let mut eligible_nodes_for_cleanup: Vec<Arc<str>> = nodes_to_process
+        let mut eligible_nodes_for_cleanup: Vec<Arc<str>> = nodes_to_process.clone()
             .into_iter()
             .filter(|node_hash| {
                 // Проверяем, существует ли узел в DAG
@@ -80,8 +79,6 @@ pub async fn start_processor(sm: Arc<StateMachineStore>, raft: Raft, node_id: No
         // Перемешиваем узлы и выбираем случайный батч
         eligible_nodes_for_cleanup.shuffle(&mut rand::rng());
         eligible_nodes_for_cleanup.truncate(BATCH_SIZE.min(eligible_nodes_for_cleanup.len()));
-
-        info!("eligible_nodes_for_cleanup {}", eligible_nodes_for_cleanup.len());
 
         if eligible_nodes_for_cleanup.is_empty() {
             continue; // Нет узлов, готовых к удалению, в этом батче
@@ -104,31 +101,31 @@ pub async fn start_processor(sm: Arc<StateMachineStore>, raft: Raft, node_id: No
         
         // Если найдены "тяжелые" узлы, отправляем их лидеру для удаления
         if !heavy_nodes.is_empty() {
-            info!("Found {} heavy nodes to remove. Sending to leader.", heavy_nodes.len());
-            let req = HeavyNodesRequest { nodes: heavy_nodes };
+            let req = HeavyNodesRequest { nodes: heavy_nodes.clone() };
 
             // Отправляем запрос лидеру
             match router.send::<_, StandardResponse>(&leader_addr, "/remove_heavy_nodes", req).await {
-            Ok(res) => {
-                debug!("Successfully submitted heavy nodes to the leader: {:?}", res.message);
-            }
-            Err(e) => {
-                match e {
-                    ApiRouterError::Network(net_err) => {
-                        error!("Network error while trying to contact leader: {}", net_err);
-                    }
-                    ApiRouterError::Http { status, text } => {
-                        error!("Leader returned an HTTP error {} with body: {}", status, text);
-                    }
-                    ApiRouterError::Api { message } => {
-                        error!("Leader API returned an error: {}", message);
-                    }
-                    ApiRouterError::Deserialization(serde_err) => {
-                        error!("Failed to deserialize a response from the leader: {}", serde_err);
+                Ok(res) => {
+                    debug!("Successfully submitted heavy nodes to the leader: {:?}", res.message);
+                }
+                Err(e) => {
+                    match e {
+                        ApiRouterError::Network(net_err) => {
+                            error!("Network error while trying to contact leader: {}", net_err);
+                        }
+                        ApiRouterError::Http { status, text } => {
+                            error!("Leader returned an HTTP error {} with body: {}", status, text);
+                        }
+                        ApiRouterError::Api { message } => {
+                            error!("Leader API returned an error: {}", message);
+                        }
+                        ApiRouterError::Deserialization(serde_err) => {
+                            error!("Failed to deserialize a response from the leader: {}", serde_err);
+                        }
                     }
                 }
             }
         }
-        }
+        info!("{} / {} / {}: process / eligible / heavy", nodes_to_process.len(), eligible_nodes_for_cleanup.len(), heavy_nodes.len());
     }
 }
