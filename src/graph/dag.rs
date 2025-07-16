@@ -1,25 +1,16 @@
 // Импортируем необходимые коллекции из стандартной библиотеки Rust для работы с графом.
 // HashMap используется для хранения списка смежности, а HashSet — для проверки циклов в DFS.
 use std::collections::{HashMap, HashSet};
-use std::fs; // Для чтения файла.
+
 use std::sync::{Arc};
 use serde::{Deserialize, Serialize};
 use serde::ser::{Serializer, SerializeMap};
 use serde::de::{Deserializer, MapAccess, Visitor};
 use std::fmt;
 use serde_json::{Value, json};
-use tracing::{info, error};
 use crate::graph::weights::{NodeInfo, NodeDepth, compute_descendants_with_depth_and_weight, get_nodes_by_depth};
 use crate::Adjacency;
 use crate::Tx;
-
-
-// Структура для десериализации JSON с генезис-транзакциями.
-#[derive(Deserialize)]
-struct GenesisTransaction {
-    hash: String, // Хэш генезис-узла.
-    data: Value,
-}
 
 #[derive(Debug, Clone, Default)]
 pub struct Node {
@@ -57,39 +48,10 @@ pub fn extract_from_var_struct(tx: &Tx) -> Result<TxVar, String> {
 
 impl DAG {
     pub fn new() -> Self {
-        let mut dag = DAG {
+        DAG {
             nodes: HashMap::new(),
             added: HashMap::new(),
-        };
-        // Загрузка генезис-транзакций
-        if let Ok(genesis_content) = fs::read_to_string("genesis.json") {
-            match serde_json::from_str::<Vec<GenesisTransaction>>(&genesis_content) {
-                Ok(transactions) => {
-                    for tx in &transactions {
-                        let hash = Arc::from(tx.hash.as_str());
-                        let data = tx.data.clone();
-                        let timestamp = std::time::SystemTime::now()
-                            .duration_since(std::time::UNIX_EPOCH)
-                            .map(|d| d.as_micros() as u64)
-                            .unwrap_or(0);
-                        // NEW: Создаем полноценный GraphNode для генезис-узла.
-                        let genesis_node = Node {
-                            parents: HashSet::new(),
-                            children: HashSet::new(),
-                            data,
-                            time: timestamp,
-                        };
-                        dag.nodes.insert(hash, genesis_node);
-                    }
-                    info!("Loaded {} genesis transactions from genesis.json", transactions.len());
-                }
-                Err(e) => error!("Failed to parse genesis.json: {}", e),
-            }
-        } else {
-             error!("Could not read genesis.json, starting with an empty graph.");
         }
-
-        dag
     }
 
     pub fn add_node_with_parents(&mut self, tx_hash: Arc<str>, tx: Tx, sign: String, func: String) -> Result<(), String> {

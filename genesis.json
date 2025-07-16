@@ -1,44 +1,56 @@
 [
   {
-    "hash": "1cace26889072316f109df9229011ceb35015b19e31c5d5e533cf6ed5c684e0d908de464c646ac626c262c7769f89d9c137458a124813472668e4189fbb7e758",
-    "parents": [],
+    "hash": "a63cf2e4f48c75104259bf1bbb36c28572d9a52045eb6e15f95af8b31b7aab54",
     "data": {
-      "prnts": [],
-      "credit": "",
-      "debit": "Hm4GGGtBGiLzHoVSTvXqz5JoV9JXqJWiYrZvXp6GCy4L",
-      "amount": 500000000000000,
-      "uniq": "",
-      "msg": "genesis",
+      "tx": {
+        "prnts": [],
+        "addr": "",
+        "seq": 0,
+        "var": {
+          "ca": "0",
+          "to": "Hm4GGGtBGiLzHoVSTvXqz5JoV9JXqJWiYrZvXp6GCy4L",
+          "val": 500000000000000,
+          "msg": "genesis"
+        }
+      },
       "sign": "",
-      "time": 1749615287863490
+      "func": "transferToken"
     }
   },
   {
-    "hash": "bb4041d38e1c807185465a653ba8b93ab5b072874b3433ab714a56038f6eefd2344b0c653555a66780843b7db7f4115c5ffb0da85fc2b954146e14426ba4eb92",
-    "parents": [],
+    "hash": "9480d4c200ef898e8b58290e9f161faf309c35c0bf04c855bdbd63e718523914",
     "data": {
-      "prnts": [],
-      "credit": "",
-      "debit": "RvCcJWKYpoEXGm6N72kDj3dA8zTxGTMSBpCLSKcJvdR",
-      "amount": 330000000000000,
-      "uniq": "",
-      "msg": "genesis2",
+      "tx": {
+        "prnts": [],
+        "addr": "",
+        "seq": 0,
+        "var": {
+          "ca": "0",
+          "to": "RvCcJWKYpoEXGm6N72kDj3dA8zTxGTMSBpCLSKcJvdR",
+          "val": 330000000000000,
+          "msg": "genesis2"
+        }
+      },
       "sign": "",
-      "time": 1749615287865263
+      "func": "transferToken"
     }
   },
   {
-    "hash": "55c0fb0277468acfa453a75076d6d4be1f0f8e8da2ff2a58128892cb39f8c63361dbae8b136deecc4467bcb91aea9bf3e2951f19323d85e4f5e23de4d44fb756",
-    "parents": [],
+    "hash": "f1f2c182a32a8dec08cce8324f4bd36232b5d79a53d3d36388f6bdfa35efacd5",
     "data": {
-      "prnts": [],
-      "credit": "",
-      "debit": "2RAHCZg7SfyLY6x5uLmtDh1tNbZr4w5NTPMWXpHrqdyc",
-      "amount": 250000000000000,
-      "uniq": "",
-      "msg": "genesis3",
+      "tx": {
+        "prnts": [],
+        "addr": "",
+        "seq": 0,
+        "var": {
+          "ca": "0",
+          "to": "2RAHCZg7SfyLY6x5uLmtDh1tNbZr4w5NTPMWXpHrqdyc",
+          "val": 250000000000000,
+          "msg": "genesis3"
+        }
+      },
       "sign": "",
-      "time": 1749615287866696
+      "func": "transferToken"
     }
   }
 ]

@@ -40,8 +40,6 @@ pub async fn add_learner(
     Ok(Json(res))
 }
 
-
-
 pub async fn change_membership(
     State(app): State<App>,
     Json(req): Json<BTreeSet<NodeId>>,

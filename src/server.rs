@@ -5,6 +5,8 @@ use axum::{
     Router,
 };
 
+use std::fs; // Для чтения файла.
+
 use std::sync::Arc;
 use serde::{Deserialize, Serialize};
 use tokio::net::TcpListener;
@@ -436,6 +438,87 @@ async fn get_full_graph_handler(
     )
 }
 
+
+// Структура для десериализации JSON с генезис-транзакциями.
+#[derive(Deserialize)]
+struct GenesisTransaction {
+    hash: String, // Хэш генезис-узла.
+    data: TxRead,
+}
+pub async fn load_genesis(
+    State(app): State<App>,
+) -> (StatusCode, Json<ApiResponse<StandardResponse>>) {
+    // Загрузка генезис-транзакций
+    // Читаем genesis.json
+    let genesis_content = match fs::read_to_string("genesis.json") {
+        Ok(content) => content,
+        Err(e) => {
+            error!("Could not read genesis.json: {}", e);
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ApiResponse::Error {
+                    status: "error".to_string(),
+                    message: format!("Failed to read genesis.json: {}", e),
+                }),
+            );
+        }
+    };
+    // Десериализуем транзакции
+    let transactions: Vec<GenesisTransaction> = match serde_json::from_str(&genesis_content) {
+        Ok(trans) => trans,
+        Err(e) => {
+            error!("Failed to parse genesis.json: {}", e);
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ApiResponse::Error {
+                    status: "error".to_string(),
+                    message: format!("Failed to parse genesis.json: {}", e),
+                }),
+            );
+        }
+    };
+    // Обрабатываем каждую транзакцию
+    let mut errors = Vec::new();
+    for tx in &transactions {
+        let request = Request::Add {
+            hash: Arc::from(tx.hash.as_str()),
+            tx: tx.data.tx.clone(),
+            sign: tx.data.sign.clone(),
+            func: tx.data.func.clone(),
+        };
+
+        match app.raft.client_write(request).await {
+            Ok(_) => {
+                debug!("Successfully added genesis transaction with hash {}", tx.hash);
+            }
+            Err(e) => {
+                error!("Failed to write genesis transaction {} to Raft: {}", tx.hash, e);
+                errors.push(format!("Failed to add transaction {}: {}", tx.hash, e));
+            }
+        }
+    };
+    // Проверяем, были ли ошибки
+    if errors.is_empty() {
+        info!("Successfully loaded {} genesis transactions", transactions.len());
+        (
+            StatusCode::OK,
+            Json(ApiResponse::Success(StandardResponse {
+                status: "success".to_string(),
+                message: Some(format!("Loaded {} genesis transactions", transactions.len())),
+            })),
+        )
+    } else {
+        error!("Errors occurred while loading genesis transactions: {:?}", errors);
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ApiResponse::Error {
+                status: "error".to_string(),
+                message: format!("Failed to load some transactions: {:?}", errors),
+            }),
+        )
+    }
+}
+
 #[derive(Deserialize, Serialize)]
 struct TxRead {
     tx: Tx,
@@ -470,6 +553,8 @@ pub async fn start_server(app: App, _addr: String, port: String) -> Result<(), B
 
         .route("/pool", get(pool_handler))
         .route("/full", get(get_full_graph_handler))
+
+        .route("/load-genesis", post(load_genesis))
         
         .route("/raft/vote", post(vote))
         .route("/raft/append", post(append))

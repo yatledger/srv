@@ -3,12 +3,18 @@ cargo run -- --id 2 --addr 127.0.0.1 --port 21002
 cargo run -- --id 3 --addr 127.0.0.1 --port 21003
 cargo run -- --id 4 --addr 127.0.0.1 --port 21004
 
-curl -i -H "Content-Type: application/json" \
-     -d '' \
-     http://127.0.0.1:21001/mng/init
+
 
 curl -i -H "Content-Type: application/json" \
      -d '[[1, "127.0.0.1:21001"], [2, "127.0.0.1:21002"], [3, "127.0.0.1:21003"], [4, "127.0.0.1:21004"]]' \
+     http://127.0.0.1:21001/mng/init
+
+curl -i -H "Content-Type: application/json" \
+     -d '' \
+     http://127.0.0.1:21001/load-genesis
+
+curl -i -H "Content-Type: application/json" \
+     -d '' \
      http://127.0.0.1:21001/mng/init
 
 curl -i -H "Content-Type: application/json" \
