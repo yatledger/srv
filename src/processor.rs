@@ -126,6 +126,6 @@ pub async fn start_processor(sm: Arc<StateMachineStore>, raft: Raft, node_id: No
                 }
             }
         }
-        info!("{} / {} / {}: process / eligible / heavy", nodes_to_process.len(), eligible_nodes_for_cleanup.len(), heavy_nodes.len());
+        info!("{} / {} / {}", nodes_to_process.len(), eligible_nodes_for_cleanup.len(), heavy_nodes.len());
     }
 }

@@ -379,7 +379,7 @@ async fn remove_heavy_nodes_handler(
         }
     } // MutexGuard освобождается здесь
 
-    info!("{} / {}: request / removed", payload.nodes.len(), nodes_to_remove.len());
+    info!("{} / {}", payload.nodes.len(), nodes_to_remove.len());
 
     // Выполняем пакетную запись в Redis
     let redis_result: redis::RedisResult<()> = redis_pipe.query_async(&mut redis).await;
