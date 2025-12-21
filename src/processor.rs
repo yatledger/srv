@@ -77,8 +77,9 @@ pub async fn start_processor(sm: Arc<StateMachineStore>, raft: Raft, node_id: No
             .collect();
 
         // Перемешиваем узлы и выбираем случайный батч
+        let eligible_len = eligible_nodes_for_cleanup.len();
         eligible_nodes_for_cleanup.shuffle(&mut rand::rng());
-        eligible_nodes_for_cleanup.truncate(BATCH_SIZE.min(eligible_nodes_for_cleanup.len()));
+        eligible_nodes_for_cleanup.truncate(BATCH_SIZE.min(eligible_len));
 
         if eligible_nodes_for_cleanup.is_empty() {
             continue; // Нет узлов, готовых к удалению, в этом батче
@@ -126,6 +127,6 @@ pub async fn start_processor(sm: Arc<StateMachineStore>, raft: Raft, node_id: No
                 }
             }
         }
-        info!("{} / {} / {}", nodes_to_process.len(), eligible_nodes_for_cleanup.len(), heavy_nodes.len());
+        info!("{} / {} / {}", nodes_to_process.len(), eligible_len, heavy_nodes.len());
     }
 }
