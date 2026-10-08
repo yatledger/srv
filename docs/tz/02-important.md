@@ -31,7 +31,7 @@
 - **V6**: вынести HTTP-хендлеры/валидацию/Redis из `server.rs`; `transferToken` вынести из `dag.rs:59` в слой логики.
 - **V7**: заменить рантайм `unwrap/expect` (19 шт.), ввести `thiserror`-тип (+ опционально `anyhow` на границе); `ApiRouterError` реализовать `Display`/`Error`.
 - **V8**: `start_server` использует переданный `addr`, а не хардкод `0.0.0.0`; внутрикластерный обмен — TLS или подписанные запросы.
-- **V9**: добавить `LICENSE`; GitHub Actions: `fmt --check`, `clippy -D warnings`, `test`, `build`; зафиксировать ревизию `openraft` и версии зависимостей.
+- **V9**: добавить `LICENSE`; **использовать уже добавленный `.github/workflows/ci.yml`** (fmt + clippy `-D warnings` + build + test); зафиксировать ревизию `openraft` и версии зависимостей. CI временно красный из-за clippy-предупреждений — закрыть задачей **D1**.
 - **V10**: `///`-документация публичных API; исправить неверные комментарии (`server.rs:16`, `utils.rs:52`); единый язык комментариев.
 
 ## 4. Критерии готовности (Definition of Done)

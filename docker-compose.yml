@@ -1,0 +1,66 @@
+# Локальный кластер dagdb из 3 узлов + Redis.
+# Запуск: docker compose up --build
+# Порт каждого узла: node1=21001, node2=21002, node3=21003.
+
+services:
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    command: ["redis-server", "--requirepass", "CHANGE_ME"]
+
+  node1:
+    build: .
+    environment:
+      NODE_ID: "1"
+      ADVERTISE_ADDR: "node1:21001"
+      BIND_ADDR: "0.0.0.0:21001"
+      DATA_DIR: "/data"
+      REDIS_URL: "redis://:CHANGE_ME@redis:6379/0"
+      RUST_LOG: "info"
+    command: ["--id", "1", "--addr", "node1", "--port", "21001"]
+    volumes:
+      - node1-data:/data
+    ports:
+      - "21001:21001"
+    depends_on:
+      - redis
+
+  node2:
+    build: .
+    environment:
+      NODE_ID: "2"
+      ADVERTISE_ADDR: "node2:21002"
+      BIND_ADDR: "0.0.0.0:21002"
+      DATA_DIR: "/data"
+      REDIS_URL: "redis://:CHANGE_ME@redis:6379/0"
+      RUST_LOG: "info"
+    command: ["--id", "2", "--addr", "node2", "--port", "21002"]
+    volumes:
+      - node2-data:/data
+    ports:
+      - "21002:21002"
+    depends_on:
+      - redis
+
+  node3:
+    build: .
+    environment:
+      NODE_ID: "3"
+      ADVERTISE_ADDR: "node3:21003"
+      BIND_ADDR: "0.0.0.0:21003"
+      DATA_DIR: "/data"
+      REDIS_URL: "redis://:CHANGE_ME@redis:6379/0"
+      RUST_LOG: "info"
+    command: ["--id", "3", "--addr", "node3", "--port", "21003"]
+    volumes:
+      - node3-data:/data
+    ports:
+      - "21003:21003"
+    depends_on:
+      - redis
+
+volumes:
+  node1-data:
+  node2-data:
+  node3-data:
