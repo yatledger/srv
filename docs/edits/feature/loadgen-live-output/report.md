@@ -41,6 +41,9 @@
 - **Поле `worker`.** В шапке блока `worker` показывается только при `--concurrency > 1`; при
   единственном воркере (демо) скрыто — иначе это всегда `worker 0`. `format_request_header` и
   `render_frame` принимают `Option<usize>`.
+- **Уровень логов.** По умолчанию — `error` (`default_log_filter`), а не `warn`: bootstrap кластера
+  вызывает внутренние `openraft`-предупреждения `membership_log_id changed: …`, которые засоряли
+  демо-вывод. `--verbose` даёт `debug`; `RUST_LOG` имеет приоритет.
 
 ## Изменённые файлы
 
@@ -62,7 +65,7 @@
 |---|---|
 | `cargo fmt --all -- --check` | ✅ OK |
 | `cargo clippy --all-targets -- -D warnings` | ✅ OK |
-| `cargo test --all` | ✅ 27 unit + 111 lib + 5 api + 1 cluster — все зелёные (Redis доступен) |
+| `cargo test --all` | ✅ 28 unit + 111 lib + 5 api + 1 cluster — все зелёные (Redis доступен) |
 | Ручной демо-прогон (без параметров, `timeout 9`) | ✅ печатает цветные блоки, идёт медленно |
 | `--show-tx --sleep 0 --tx 6 --concurrency 2` | ✅ 6 блоков, все `200 OK`, отчёт OK |
 | `--tx 4 --json-out …` | ✅ 0 блоков, JSON-отчёт записан |
@@ -72,6 +75,7 @@
 | Случайные узлы: `--tx 300 --concurrency 8 --json-out` | ✅ 300/300, `ok=true`, реплики равны (303) |
 | `--concurrency 1` (демо) | ✅ шапка без `worker` |
 | `--concurrency 3` | ✅ шапка содержит `worker N` |
+| Логи по умолчанию | ✅ `membership_log_id changed` отсутствует; `--verbose` их включает, `RUST_LOG` переопределяет |
 
 ## Отклонения от плана
 
