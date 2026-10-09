@@ -25,3 +25,7 @@
 - [`raft-router-unreachable-logs/`](raft-router-unreachable-logs/) — **F5**: Raft-роутер логировал
   штатную недоступность пира (`/raft/append`) как `ERROR`, засоряя вывод в конце нагрузочного прогона.
   Статус: реализован (транспортная ошибка RPC → `debug`), проверки пройдены (см. `report.md`).
+- [`loadgen-redis-container/`](loadgen-redis-container/) — **F6**: `scripts/loadgen.sh` не поднимал
+  Redis и падал при повторном запуске контейнера (конфликт имени). Статус: реализован (скрипт сам
+  поднимает Redis при недоступности, `docker rm -f` перед `run`, пароль из `REDIS_URL`), проверки
+  пройдены (см. `report.md`).
