@@ -323,10 +323,14 @@ fn shorten(s: &str, head: usize, tail: usize) -> String {
     format!("{head_str}…{tail_str}")
 }
 
-/// Строит строку-шапку блока: номер, воркер, `seq`, адрес-отправитель.
-pub fn format_request_header(n: u64, worker: usize, signed: &SignedTx) -> String {
+/// Строит строку-шапку блока: номер, воркер (если он не один), `seq`, адрес-отправитель.
+pub fn format_request_header(n: u64, worker: Option<usize>, signed: &SignedTx) -> String {
+    let worker = match worker {
+        Some(id) => format!(" · worker {id}"),
+        None => String::new(),
+    };
     format!(
-        "#{n} · worker {worker} · seq {} · addr {}",
+        "#{n}{worker} · seq {} · addr {}",
         signed.tx.sequence(),
         shorten(signed.tx.address().as_str(), 4, 4),
     )
@@ -392,9 +396,11 @@ fn reason_phrase(status: u16) -> &'static str {
 }
 
 /// Рендерит целый блок «шапка → запрос → ответ» в виде строки (с рамкой и цветами).
+///
+/// `worker` = `None` при единственном воркере (демо-режим), чтобы не шуметь `worker 0`.
 pub fn render_frame(
     n: u64,
-    worker: usize,
+    worker: Option<usize>,
     signed: &SignedTx,
     node: &str,
     role: &str,
@@ -533,7 +539,7 @@ mod tests {
         let palette = Palette::new(false);
         let block = render_frame(
             12,
-            0,
+            Some(0),
             &signed(),
             "http://127.0.0.1:21001",
             "follower → лидер",
@@ -555,11 +561,27 @@ mod tests {
     }
 
     #[test]
+    fn render_frame_omits_worker_when_single() {
+        let palette = Palette::new(false);
+        let block = render_frame(
+            7,
+            None,
+            &signed(),
+            "http://x",
+            "лидер",
+            &outcome(200, 1.0),
+            &palette,
+        );
+        assert!(block.contains("#7"));
+        assert!(!block.contains("worker"), "при одном воркере поле шумное");
+    }
+
+    #[test]
     fn render_frame_colors_when_enabled() {
         let palette = Palette::new(true);
         let ok = render_frame(
             1,
-            0,
+            None,
             &signed(),
             "http://x",
             "лидер",
@@ -569,7 +591,7 @@ mod tests {
         assert!(ok.contains("\x1b[32m"), "успех должен быть зелёным");
         let fail = render_frame(
             1,
-            0,
+            None,
             &signed(),
             "http://x",
             "лидер",

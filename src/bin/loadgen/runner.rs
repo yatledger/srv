@@ -250,7 +250,9 @@ async fn worker_loop(
             // Блок печатается под общим мьютексом — при `concurrency > 1` строки
             // разных транзакций не перемешиваются (R6).
             let role = node_role(*node_id, leader_id);
-            let block = render_frame(n, worker_id, &signed, node_url, role, &outcome, palette);
+            // Воркер показываем только при реальной конкуренции; иначе это шум.
+            let worker = (workers > 1).then_some(worker_id);
+            let block = render_frame(n, worker, &signed, node_url, role, &outcome, palette);
             let _guard = OUTPUT_LOCK.lock().unwrap_or_else(|e| e.into_inner());
             print!("{block}");
         }
