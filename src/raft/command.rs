@@ -1,26 +1,34 @@
-// Модуль для определения команд и ответов Raft
-use crate::Tx;
-use serde::{Deserialize, Serialize};
-use std::sync::Arc;
+//! Команды и ответы Raft.
 
-// Команды, которые будут отправляться через Raft для управления Dag
+use serde::{Deserialize, Serialize};
+
+use crate::Tx;
+use crate::domain::{Func, Hash};
+
+/// Команды, отправляемые через Raft для управления DAG.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum Request {
-    // Добавление узла с хэшом, родителями и данными
+    /// Добавление узла: хэш, транзакция, подпись и функция.
     Add {
-        hash: Arc<str>,
+        /// Хэш нового узла.
+        hash: Hash,
+        /// Транзакция.
         tx: Tx,
+        /// Подпись ed25519 в hex.
         sign: String,
-        func: String,
+        /// Функция транзакции.
+        func: Func,
     },
-    // Удаление узла по хэшу
+    /// Удаление узлов по хэшам.
     Remove {
-        nodes: Vec<Arc<str>>,
+        /// Хэши удаляемых узлов.
+        nodes: Vec<Hash>,
     },
 }
 
+/// Ответ state machine на команду.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Response {
+    /// Результат применения (например, `Ok` или текст ошибки).
     pub value: Option<String>,
 }
-//impl openraft::AppDataResponse for ClientResponse {}

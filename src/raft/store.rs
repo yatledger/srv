@@ -15,8 +15,8 @@ use super::typ::*;
 use crate::TypeConfig;
 
 use super::db::Db;
+use crate::domain::{Func, Hash};
 use crate::graph::dag::{Dag, extract_from_var_struct};
-use crate::utils::validate_func;
 
 /// Детерминированная валидация команды `Add` в state machine.
 ///
@@ -27,11 +27,9 @@ use crate::utils::validate_func;
 /// Ограничение на количество родителей (2..100) намеренно не проверяется здесь:
 /// это политика входного API, а генезис-узлы легитимно имеют пустой список
 /// родителей. Проверка длины остаётся на границе (`validate_parents`).
-fn validate_add(dag: &Dag, hash: &str, tx: &crate::Tx, func: &str) -> Result<(), String> {
-    let hash: std::sync::Arc<str> = std::sync::Arc::from(hash);
-
+fn validate_add(dag: &Dag, hash: &Hash, tx: &crate::Tx, func: &Func) -> Result<(), String> {
     // Узел с таким хэшем не должен уже существовать (ни в Dag, ни в реестре added).
-    if dag.contains_node(&hash) || dag.is_node_added(&hash) {
+    if dag.contains_node(hash) || dag.is_node_added(hash) {
         return Err("node already exists".to_string());
     }
 
@@ -49,10 +47,8 @@ fn validate_add(dag: &Dag, hash: &str, tx: &crate::Tx, func: &str) -> Result<(),
         }
     }
 
-    validate_func(func)?;
-
     // Структура `var` обязательна для известных функций.
-    if func == crate::graph::dag::TRANSFER_TOKEN {
+    if *func == Func::TransferToken {
         extract_from_var_struct(tx)?.validate()?;
     }
 
@@ -63,7 +59,7 @@ fn validate_add(dag: &Dag, hash: &str, tx: &crate::Tx, func: &str) -> Result<(),
 ///
 /// Список не пуст, все узлы существуют в Dag. Пустой/частично отсутствующий
 /// список не применяется.
-fn validate_remove(dag: &Dag, nodes: &[std::sync::Arc<str>]) -> Result<(), String> {
+fn validate_remove(dag: &Dag, nodes: &[Hash]) -> Result<(), String> {
     if nodes.is_empty() {
         return Err("node list is empty".to_string());
     }
@@ -281,7 +277,7 @@ impl RaftStateMachine<TypeConfig> for Arc<StateMachineStore> {
                                 hash.clone(),
                                 tx.clone(),
                                 sign.clone(),
-                                func.clone(),
+                                *func,
                             ) {
                                 Ok(()) => res.push(Response {
                                     value: Some("Ok".to_string()),
@@ -402,12 +398,11 @@ mod tests {
     use super::*;
     use crate::Tx;
     use serde_json::json;
-    use std::sync::Arc;
 
     fn tx(parents: &[&str]) -> Tx {
         Tx {
-            prnts: parents.iter().map(|p| Arc::from(*p)).collect(),
-            addr: Arc::from("addr"),
+            prnts: parents.iter().map(|p| Hash::from(*p)).collect(),
+            addr: crate::domain::Address::from("addr"),
             seq: 0,
             var: json!({ "ca": "a", "to": "b", "val": 1, "msg": "m" }),
         }
@@ -420,21 +415,35 @@ mod tests {
     #[test]
     fn add_accepts_genesis_without_parents() {
         let dag = Dag::new();
-        assert!(validate_add(&dag, "genesis", &valid_tx_var(), "transferToken").is_ok());
+        assert!(
+            validate_add(
+                &dag,
+                &Hash::from("genesis"),
+                &valid_tx_var(),
+                &Func::TransferToken
+            )
+            .is_ok()
+        );
     }
 
     #[test]
     fn add_rejects_duplicate_node() {
         let mut dag = Dag::new();
-        let hash: Arc<str> = Arc::from("n1");
+        let hash = Hash::from("n1");
         dag.add_node_with_parents(
             hash.clone(),
             valid_tx_var(),
             String::new(),
-            "transferToken".to_string(),
+            Func::TransferToken,
         )
         .unwrap();
-        let err = validate_add(&dag, "n1", &valid_tx_var(), "transferToken").unwrap_err();
+        let err = validate_add(
+            &dag,
+            &Hash::from("n1"),
+            &valid_tx_var(),
+            &Func::TransferToken,
+        )
+        .unwrap_err();
         assert!(err.contains("already exists"));
     }
 
@@ -443,9 +452,9 @@ mod tests {
         let dag = Dag::new();
         let err = validate_add(
             &dag,
-            "n2",
+            &Hash::from("n2"),
             &tx(&["missing-a", "missing-b"]),
-            "transferToken",
+            &Func::TransferToken,
         )
         .unwrap_err();
         assert!(err.contains("does not exist"));
@@ -455,32 +464,31 @@ mod tests {
     fn add_rejects_duplicate_parents() {
         // Оба родителя должны существовать, чтобы дойти до проверки уникальности.
         let mut dag = Dag::new();
-        let parent_a: Arc<str> = Arc::from("pa");
-        let parent_b: Arc<str> = Arc::from("pb");
+        let parent_a = Hash::from("pa");
+        let parent_b = Hash::from("pb");
         dag.add_node_with_parents(
             parent_a.clone(),
             valid_tx_var(),
             String::new(),
-            "transferToken".to_string(),
+            Func::TransferToken,
         )
         .unwrap();
         dag.add_node_with_parents(
             parent_b.clone(),
             valid_tx_var(),
             String::new(),
-            "transferToken".to_string(),
+            Func::TransferToken,
         )
         .unwrap();
 
-        let err = validate_add(&dag, "n3", &tx(&["pa", "pa"]), "transferToken").unwrap_err();
+        let err = validate_add(
+            &dag,
+            &Hash::from("n3"),
+            &tx(&["pa", "pa"]),
+            &Func::TransferToken,
+        )
+        .unwrap_err();
         assert!(err.contains("unique"));
-    }
-
-    #[test]
-    fn add_rejects_unknown_func() {
-        let dag = Dag::new();
-        let err = validate_add(&dag, "n4", &valid_tx_var(), "noSuchFunc").unwrap_err();
-        assert!(err.contains("unknown func"));
     }
 
     #[test]
@@ -488,22 +496,30 @@ mod tests {
         let dag = Dag::new();
         let mut bad = valid_tx_var();
         bad.var = json!({ "totally": "wrong" });
-        let err = validate_add(&dag, "n5", &bad, "transferToken").unwrap_err();
+        let err = validate_add(&dag, &Hash::from("n5"), &bad, &Func::TransferToken).unwrap_err();
         assert!(err.contains("var"));
     }
 
     #[test]
     fn add_accepts_existing_parent() {
         let mut dag = Dag::new();
-        let parent: Arc<str> = Arc::from("root");
+        let parent = Hash::from("root");
         dag.add_node_with_parents(
             parent.clone(),
             valid_tx_var(),
             String::new(),
-            "transferToken".to_string(),
+            Func::TransferToken,
         )
         .unwrap();
-        assert!(validate_add(&dag, "child", &tx(&["root"]), "transferToken").is_ok());
+        assert!(
+            validate_add(
+                &dag,
+                &Hash::from("child"),
+                &tx(&["root"]),
+                &Func::TransferToken
+            )
+            .is_ok()
+        );
     }
 
     #[test]
@@ -515,19 +531,19 @@ mod tests {
     #[test]
     fn remove_rejects_missing_node() {
         let dag = Dag::new();
-        let nodes = vec![Arc::from("ghost")];
+        let nodes = vec![Hash::from("ghost")];
         assert!(validate_remove(&dag, &nodes).is_err());
     }
 
     #[test]
     fn remove_accepts_existing_node() {
         let mut dag = Dag::new();
-        let node: Arc<str> = Arc::from("n");
+        let node = Hash::from("n");
         dag.add_node_with_parents(
             node.clone(),
             valid_tx_var(),
             String::new(),
-            "transferToken".to_string(),
+            Func::TransferToken,
         )
         .unwrap();
         assert!(validate_remove(&dag, &[node]).is_ok());
@@ -554,22 +570,22 @@ mod tests {
         {
             let store = StateMachineStore::open(&path).unwrap();
             let mut sm = store.state_machine.write().await;
-            let node: Arc<str> = Arc::from("node-1");
+            let node = Hash::from("node-1");
             sm.dag
                 .add_node_with_parents(
                     node.clone(),
                     valid_tx_var(),
                     String::new(),
-                    "transferToken".to_string(),
+                    Func::TransferToken,
                 )
                 .unwrap();
-            let removed: Arc<str> = Arc::from("node-2");
+            let removed = Hash::from("node-2");
             sm.dag
                 .add_node_with_parents(
                     removed.clone(),
                     valid_tx_var(),
                     String::new(),
-                    "transferToken".to_string(),
+                    Func::TransferToken,
                 )
                 .unwrap();
             sm.dag.remove_node(removed.clone());
@@ -584,11 +600,11 @@ mod tests {
             let store = StateMachineStore::open(&path).unwrap();
             let sm = store.state_machine.read().await;
             assert!(
-                sm.dag.contains_node(&Arc::from("node-1")),
+                sm.dag.contains_node(&Hash::from("node-1")),
                 "Dag должен пережить рестарт"
             );
             assert!(
-                sm.dag.is_node_added(&Arc::from("node-2")),
+                sm.dag.is_node_added(&Hash::from("node-2")),
                 "реестр added должен переживать рестарт"
             );
             assert_eq!(sm.dag.get_node_count(), 1);
@@ -609,12 +625,12 @@ mod tests {
         use openraft::entry::RaftEntry;
 
         let path = temp_path("apply-add");
-        let node_hash: Arc<str> = Arc::from("node-1");
+        let node_hash = Hash::from("node-1");
         let req = Request::Add {
             hash: node_hash.clone(),
             tx: valid_tx_var(),
             sign: String::new(),
-            func: "transferToken".to_string(),
+            func: Func::TransferToken,
         };
         let log_id = openraft::testing::log_id::<TypeConfig>(1, 1, 1);
         let entry = Entry::new(log_id, EntryPayload::Normal(req));
@@ -651,12 +667,12 @@ mod tests {
         use openraft::entry::RaftEntry;
 
         let path = temp_path("apply-dup");
-        let node_hash: Arc<str> = Arc::from("node-1");
+        let node_hash = Hash::from("node-1");
         let add = Request::Add {
             hash: node_hash.clone(),
             tx: valid_tx_var(),
             sign: String::new(),
-            func: "transferToken".to_string(),
+            func: Func::TransferToken,
         };
 
         let store = StateMachineStore::open(&path).unwrap();
@@ -720,10 +736,10 @@ mod tests {
         let mut sm = store.clone();
 
         let req = Request::Add {
-            hash: Arc::from("child"),
+            hash: Hash::from("child"),
             tx: tx(&["nonexistent-parent"]),
             sign: String::new(),
-            func: "transferToken".to_string(),
+            func: Func::TransferToken,
         };
         let entry = Entry::new(
             openraft::testing::log_id::<TypeConfig>(1, 1, 1),
@@ -741,7 +757,7 @@ mod tests {
                 .read()
                 .await
                 .dag
-                .contains_node(&Arc::from("child")),
+                .contains_node(&Hash::from("child")),
             "невалидная команда не меняет DAG"
         );
     }

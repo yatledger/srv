@@ -14,12 +14,12 @@ use axum::{
 use std::fs;
 
 use serde::{Deserialize, Serialize};
-use std::sync::Arc;
 use tokio::net::TcpListener;
 use tracing::{debug, error, info};
 
 use crate::Tx;
 use crate::app::App;
+use crate::domain::{Func, Hash};
 use crate::raft;
 use crate::tx_logic::{self, PrepareError, TxRead};
 use raft::api::*;
@@ -63,23 +63,23 @@ fn prepare_error_response(err: PrepareError) -> (StatusCode, Json<ApiResponse<St
 async fn validate_and_prepare_tx(
     app: &App,
     payload: &TxRead,
-) -> Result<Arc<str>, (StatusCode, Json<ApiResponse<StandardResponse>>)> {
-    let hash = tx_logic::validate_structure(payload).map_err(prepare_error_response)?;
+) -> Result<(Hash, Func), (StatusCode, Json<ApiResponse<StandardResponse>>)> {
+    let (hash, func) = tx_logic::validate_structure(payload).map_err(prepare_error_response)?;
 
     let state_machine = app.state_machine.state_machine.read().await;
     let tx_hash = tx_logic::hash_to_hex(&hash);
     tx_logic::validate_against_state(&state_machine.dag, &tx_hash, &payload.tx.prnts)
         .map_err(prepare_error_response)?;
 
-    Ok(tx_hash)
+    Ok((tx_hash, func))
 }
 
 #[derive(Deserialize, Serialize)]
 struct InternalAddRequest {
-    hash: Arc<str>,
+    hash: Hash,
     tx: Tx,
     sign: String,
-    func: String,
+    func: Func,
 }
 
 #[axum_macros::debug_handler]
@@ -87,8 +87,8 @@ async fn add_tx(
     State(app): State<App>,
     Json(payload): Json<TxRead>,
 ) -> (StatusCode, Json<ApiResponse<StandardResponse>>) {
-    let tx_hash = match validate_and_prepare_tx(&app, &payload).await {
-        Ok(hash) => hash,
+    let (tx_hash, func) = match validate_and_prepare_tx(&app, &payload).await {
+        Ok(prepared) => prepared,
         Err(response) => return response,
     };
 
@@ -112,7 +112,7 @@ async fn add_tx(
         hash: tx_hash,
         tx: payload.tx,
         sign: payload.sign,
-        func: payload.func,
+        func,
     };
 
     if leader_id == app.id {
@@ -175,11 +175,11 @@ async fn add_handler(
     let tx_read = TxRead {
         tx: payload.tx.clone(),
         sign: payload.sign.clone(),
-        func: payload.func.clone(),
+        func: payload.func.to_string(),
     };
 
-    let computed_hash = match validate_and_prepare_tx(&app, &tx_read).await {
-        Ok(hash) => hash,
+    let (computed_hash, func) = match validate_and_prepare_tx(&app, &tx_read).await {
+        Ok(prepared) => prepared,
         Err(response) => return response,
     };
 
@@ -198,7 +198,7 @@ async fn add_handler(
         hash: payload.hash,
         tx: payload.tx,
         sign: payload.sign,
-        func: payload.func,
+        func,
     };
 
     match app.raft.client_write(request).await {
@@ -249,7 +249,7 @@ async fn pool_handler(
 
     // Считаем число активных родителей напрямую, без построения полной карты
     // смежности `get_parents()` для всего графа.
-    let mut nodes: Vec<(Arc<str>, usize)> = state_machine
+    let mut nodes: Vec<(Hash, usize)> = state_machine
         .dag
         .get_nodes()
         .iter()
@@ -264,7 +264,7 @@ async fn pool_handler(
         .into_iter()
         .skip(offset)
         .take(limit)
-        .map(|(node, _)| String::from(&*node))
+        .map(|(node, _)| node.to_string())
         .collect();
 
     (
@@ -395,11 +395,19 @@ pub async fn load_genesis(
     // Обрабатываем каждую транзакцию
     let mut errors = Vec::new();
     for tx in &transactions {
+        let func = match tx.data.func.parse::<Func>() {
+            Ok(func) => func,
+            Err(e) => {
+                errors.push(format!("Transaction {}: {}", tx.hash, e));
+                continue;
+            }
+        };
+
         let request = Request::Add {
-            hash: Arc::from(tx.hash.as_str()),
+            hash: Hash::from(tx.hash.as_str()),
             tx: tx.data.tx.clone(),
             sign: tx.data.sign.clone(),
-            func: tx.data.func.clone(),
+            func,
         };
 
         match app.raft.client_write(request).await {
@@ -504,7 +512,7 @@ mod tests {
 #[derive(Deserialize, Serialize, Clone, Debug)]
 pub struct HeavyNodesRequest {
     /// Хэши узлов-кандидатов.
-    pub nodes: Vec<Arc<str>>,
+    pub nodes: Vec<Hash>,
 }
 
 /// Запускает HTTP-сервер: собирает роутеры и слушает `bind_addr`.

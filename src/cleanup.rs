@@ -4,21 +4,20 @@
 //! процессора лидера. Функции выбора кандидатов не клонируют весь DAG: они
 //! читают состояние под коротким read-локом и возвращают только нужные хэши.
 
-use std::sync::Arc;
-
 use tracing::{debug, error, info};
 
 use crate::app::App;
+use crate::domain::Hash;
 use crate::raft::command::Request;
 use crate::raft::store::StateMachineStore;
 
 /// Отбирает узлы без активных родителей, годные к очистке, и обрезает до
 /// размера батча. Весь DAG не клонируется.
-pub async fn select_candidates(sm: &StateMachineStore, batch_size: usize) -> Vec<Arc<str>> {
+pub async fn select_candidates(sm: &StateMachineStore, batch_size: usize) -> Vec<Hash> {
     let state_machine = sm.state_machine.read().await;
     let dag = &state_machine.dag;
 
-    let mut candidates: Vec<Arc<str>> = dag
+    let mut candidates: Vec<Hash> = dag
         .get_node_keys()
         .into_iter()
         .filter(|node| {
@@ -39,16 +38,16 @@ pub async fn select_candidates(sm: &StateMachineStore, batch_size: usize) -> Vec
 /// Веса считаются под коротким read-локом без клонирования DAG.
 pub async fn select_heavy(
     sm: &StateMachineStore,
-    candidates: &[Arc<str>],
+    candidates: &[Hash],
     weight_threshold: f64,
-) -> Vec<Arc<str>> {
+) -> Vec<Hash> {
     if candidates.is_empty() {
         return Vec::new();
     }
     let state_machine = sm.state_machine.read().await;
     let weights = state_machine.dag.compute_weights_for_batch(candidates);
 
-    let mut heavy: Vec<Arc<str>> = weights
+    let mut heavy: Vec<Hash> = weights
         .into_iter()
         .filter_map(|(node, weight)| (weight > weight_threshold).then_some(node))
         .collect();
@@ -57,20 +56,20 @@ pub async fn select_heavy(
 }
 
 /// Узел и его сериализованные данные, подготовленные к архивации.
-type NodePayload = (Arc<str>, String);
+type NodePayload = (Hash, String);
 
 /// Архивирует узлы в Redis и удаляет их через Raft.
 ///
 /// Возвращает число удалённых узлов. Узлы, уже находящиеся в реестре `added`,
 /// пропускаются. Данные читаются под коротким локом, запись в Redis и Raft
 /// выполняется вне блокировки.
-pub async fn archive_and_remove(app: &App, candidates: Vec<Arc<str>>) -> Result<usize, String> {
+pub async fn archive_and_remove(app: &App, candidates: Vec<Hash>) -> Result<usize, String> {
     if candidates.is_empty() {
         return Ok(0);
     }
 
     // Берём данные узлов и отсекаем те, что уже удалены.
-    let (nodes_to_remove, payloads): (Vec<Arc<str>>, Vec<NodePayload>) = {
+    let (nodes_to_remove, payloads): (Vec<Hash>, Vec<NodePayload>) = {
         let state_machine = app.state_machine.state_machine.read().await;
         let dag = &state_machine.dag;
 
@@ -104,7 +103,7 @@ pub async fn archive_and_remove(app: &App, candidates: Vec<Arc<str>>) -> Result<
     let mut redis_pipe = redis::pipe();
     for (node, json) in &payloads {
         redis_pipe
-            .set(format!("confirmed:{}", node.as_ref()), json.clone())
+            .set(format!("confirmed:{}", node.as_str()), json.clone())
             .ignore();
     }
 
@@ -133,13 +132,16 @@ pub async fn archive_and_remove(app: &App, candidates: Vec<Arc<str>>) -> Result<
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Arc;
+
     use crate::Tx;
+    use crate::domain::Func;
     use serde_json::json;
 
-    fn tx(parents: Vec<Arc<str>>) -> Tx {
+    fn tx(parents: Vec<Hash>) -> Tx {
         Tx {
             prnts: parents,
-            addr: Arc::from("addr"),
+            addr: crate::domain::Address::from("addr"),
             seq: 0,
             var: json!({ "ca": "a", "to": "b", "val": 1, "msg": "m" }),
         }
@@ -150,21 +152,16 @@ mod tests {
         let store = Arc::new(StateMachineStore::default());
         {
             let mut sm = store.state_machine.write().await;
-            let root: Arc<str> = Arc::from("root");
+            let root = Hash::from("root");
             sm.dag
-                .add_node_with_parents(
-                    root.clone(),
-                    tx(vec![]),
-                    String::new(),
-                    "transferToken".to_string(),
-                )
+                .add_node_with_parents(root.clone(), tx(vec![]), String::new(), Func::TransferToken)
                 .unwrap();
             sm.dag
                 .add_node_with_parents(
-                    Arc::from("child"),
+                    Hash::from("child"),
                     tx(vec![root]),
                     String::new(),
-                    "transferToken".to_string(),
+                    Func::TransferToken,
                 )
                 .unwrap();
         }
@@ -175,7 +172,7 @@ mod tests {
     async fn select_candidates_only_parentless_and_truncated() {
         let store = store_with_chain().await;
         let candidates = select_candidates(store.as_ref(), 100).await;
-        assert_eq!(candidates, vec![Arc::from("root")]);
+        assert_eq!(candidates, vec![Hash::from("root")]);
 
         // Обрезка до батча.
         let empty = select_candidates(store.as_ref(), 0).await;
@@ -185,11 +182,11 @@ mod tests {
     #[tokio::test]
     async fn select_heavy_respects_threshold() {
         let store = store_with_chain().await;
-        let candidates = vec![Arc::from("root")];
+        let candidates = vec![Hash::from("root")];
 
         // root имеет одного потомка (вес 0.5 после насыщения).
         let heavy = select_heavy(store.as_ref(), &candidates, 0.4).await;
-        assert_eq!(heavy, vec![Arc::from("root")]);
+        assert_eq!(heavy, vec![Hash::from("root")]);
 
         let not_heavy = select_heavy(store.as_ref(), &candidates, 0.6).await;
         assert!(not_heavy.is_empty());

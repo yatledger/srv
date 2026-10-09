@@ -17,6 +17,7 @@ pub mod app;
 pub mod auth;
 pub mod cleanup;
 pub mod config;
+pub mod domain;
 mod graph;
 pub mod processor;
 mod raft;
@@ -27,6 +28,7 @@ pub mod web;
 
 use crate::app::App;
 use crate::config::AppConfig;
+use crate::domain::{Address, Hash};
 use raft::command::{Request, Response};
 use raft::log::PersistentLogStore;
 use raft::network::NetworkFactory;
@@ -35,7 +37,7 @@ use raft::store::{StateMachineData, StateMachineStore};
 use raft::typ;
 
 /// Псевдоним для списка смежности графа: узел -> список его детей или родителей.
-pub type Adjacency = HashMap<Arc<str>, Vec<Arc<str>>>;
+pub type Adjacency = HashMap<Hash, Vec<Hash>>;
 
 pub use raft::log::LogStore;
 
@@ -47,9 +49,9 @@ pub type NodeId = u64;
 #[derive(Debug, Clone, Deserialize, Serialize, Default)]
 pub struct Tx {
     /// Хэши родительских транзакций.
-    prnts: Vec<Arc<str>>,
+    prnts: Vec<Hash>,
     /// Публичный ключ ed25519 в base58.
-    addr: Arc<str>,
+    addr: Address,
     /// Порядковый номер транзакции.
     seq: u32,
     /// Данные вызова (структура зависит от `func`).

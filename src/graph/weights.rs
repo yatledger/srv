@@ -5,16 +5,18 @@ use serde::Serialize;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::{Arc, Mutex, OnceLock};
 
+use crate::domain::Hash;
+
 #[derive(Debug, Clone)]
 pub struct NodeInfo {
-    pub node: Arc<str>,
+    pub node: Hash,
     pub depth: usize,
     pub weight: f64,
 }
 
 #[derive(Debug, Clone, Serialize)]
 pub struct NodeDepth {
-    pub node: Arc<str>,
+    pub node: Hash,
     pub depth: usize,
 }
 
@@ -67,11 +69,11 @@ pub fn saturate_weight(raw: f64) -> f64 {
 /// (Memoization). Это убирает повторный обход общих подграфов (находка C30).
 /// Разные узлы обрабатываются параллельно в глобальном rayon-пуле.
 pub fn compute_descendants_with_depth_and_weight(
-    nodes_map: &HashMap<Arc<str>, Node>,
-    nodes_to_process: &HashSet<Arc<str>>,
-) -> HashMap<Arc<str>, Vec<NodeInfo>> {
+    nodes_map: &HashMap<Hash, Node>,
+    nodes_to_process: &HashSet<Hash>,
+) -> HashMap<Hash, Vec<NodeInfo>> {
     // Единый мемоизирующий кэш на вызов, разделяемый между потоками.
-    let memo: Mutex<HashMap<Arc<str>, Arc<Vec<NodeInfo>>>> = Mutex::new(HashMap::new());
+    let memo: Mutex<HashMap<Hash, Arc<Vec<NodeInfo>>>> = Mutex::new(HashMap::new());
 
     install_in_pool(|| {
         nodes_to_process
@@ -86,9 +88,9 @@ pub fn compute_descendants_with_depth_and_weight(
 
 /// Находит потомков узла, переиспользуя мемоизированные результаты.
 fn find_descendants_cached(
-    nodes_map: &HashMap<Arc<str>, Node>,
-    start_node: &Arc<str>,
-    memo: &Mutex<HashMap<Arc<str>, Arc<Vec<NodeInfo>>>>,
+    nodes_map: &HashMap<Hash, Node>,
+    start_node: &Hash,
+    memo: &Mutex<HashMap<Hash, Arc<Vec<NodeInfo>>>>,
 ) -> Arc<Vec<NodeInfo>> {
     if let Some(cached) = memo
         .lock()
@@ -100,10 +102,10 @@ fn find_descendants_cached(
     }
 
     let mut descendants: Vec<NodeInfo> = Vec::new();
-    let mut visited: HashSet<Arc<str>> = HashSet::new();
-    let mut queue: VecDeque<(Arc<str>, usize)> = VecDeque::new();
+    let mut visited: HashSet<Hash> = HashSet::new();
+    let mut queue: VecDeque<(Hash, usize)> = VecDeque::new();
 
-    if let Some(start_node_obj) = nodes_map.get(start_node.as_ref()) {
+    if let Some(start_node_obj) = nodes_map.get(start_node) {
         for child in &start_node_obj.children {
             queue.push_back((child.clone(), 1));
         }
@@ -138,7 +140,7 @@ fn find_descendants_cached(
                     });
                 }
             }
-        } else if let Some(current_node_obj) = nodes_map.get(current.as_ref()) {
+        } else if let Some(current_node_obj) = nodes_map.get(&current) {
             for child in &current_node_obj.children {
                 if !visited.contains(child) {
                     queue.push_back((child.clone(), relative_depth + 1));
@@ -157,10 +159,10 @@ fn find_descendants_cached(
 /// Вычисляет глубину каждого узла в Dag относительно корневых узлов
 /// Глубина корневых узлов (без родителей) = 0
 /// Глубина остальных узлов = максимальная глубина родителей + 1
-pub fn compute_node_depths(nodes_map: &HashMap<Arc<str>, Node>) -> HashMap<Arc<str>, usize> {
-    let mut depths: HashMap<Arc<str>, usize> = HashMap::new();
-    let mut in_degree: HashMap<Arc<str>, usize> = HashMap::new();
-    let mut queue: VecDeque<Arc<str>> = VecDeque::new();
+pub fn compute_node_depths(nodes_map: &HashMap<Hash, Node>) -> HashMap<Hash, usize> {
+    let mut depths: HashMap<Hash, usize> = HashMap::new();
+    let mut in_degree: HashMap<Hash, usize> = HashMap::new();
+    let mut queue: VecDeque<Hash> = VecDeque::new();
 
     // Инициализация: подсчитываем входящие степени для каждого узла
     for (node_id, node) in nodes_map {
@@ -205,7 +207,7 @@ pub fn compute_node_depths(nodes_map: &HashMap<Arc<str>, Node>) -> HashMap<Arc<s
 }
 
 /// Возвращает список всех узлов с их глубинами, отсортированный по глубине
-pub fn get_nodes_by_depth(nodes_map: &HashMap<Arc<str>, Node>) -> Vec<NodeDepth> {
+pub fn get_nodes_by_depth(nodes_map: &HashMap<Hash, Node>) -> Vec<NodeDepth> {
     let depths = compute_node_depths(nodes_map);
 
     let mut result: Vec<NodeDepth> = depths
@@ -243,30 +245,30 @@ mod tests {
     fn node(children: &[&str]) -> Node {
         Node {
             parents: Default::default(),
-            children: children.iter().map(|c| Arc::from(*c)).collect(),
+            children: children.iter().map(|c| Hash::from(*c)).collect(),
             data: serde_json::json!({}),
             time: 0,
         }
     }
 
     /// Алмаз: root -> a, root -> b, a -> shared, b -> shared, shared -> leaf.
-    fn diamond() -> HashMap<Arc<str>, Node> {
+    fn diamond() -> HashMap<Hash, Node> {
         let mut map = HashMap::new();
-        map.insert(Arc::from("root"), node(&["a", "b"]));
-        map.insert(Arc::from("a"), node(&["shared"]));
-        map.insert(Arc::from("b"), node(&["shared"]));
-        map.insert(Arc::from("shared"), node(&["leaf"]));
-        map.insert(Arc::from("leaf"), node(&[]));
+        map.insert(Hash::from("root"), node(&["a", "b"]));
+        map.insert(Hash::from("a"), node(&["shared"]));
+        map.insert(Hash::from("b"), node(&["shared"]));
+        map.insert(Hash::from("shared"), node(&["leaf"]));
+        map.insert(Hash::from("leaf"), node(&[]));
         map
     }
 
     #[test]
     fn memoized_descendants_match_expected_breadth_first_result() {
         let map = diamond();
-        let roots: HashSet<Arc<str>> = [Arc::from("root")].into_iter().collect();
+        let roots: HashSet<Hash> = [Hash::from("root")].into_iter().collect();
         let result = compute_descendants_with_depth_and_weight(&map, &roots);
 
-        let mut got: Vec<(String, usize)> = result[&Arc::from("root")]
+        let mut got: Vec<(String, usize)> = result[&Hash::from("root")]
             .iter()
             .map(|d| (d.node.to_string(), d.depth))
             .collect();
@@ -287,15 +289,15 @@ mod tests {
     #[test]
     fn memoization_does_not_change_results_for_multiple_roots() {
         let map = diamond();
-        let roots: HashSet<Arc<str>> = [Arc::from("root"), Arc::from("a"), Arc::from("shared")]
+        let roots: HashSet<Hash> = [Hash::from("root"), Hash::from("a"), Hash::from("shared")]
             .into_iter()
             .collect();
         let result = compute_descendants_with_depth_and_weight(&map, &roots);
 
         // Каждый узел вычисляется независимо и корректно.
-        let shared = &result[&Arc::from("shared")];
+        let shared = &result[&Hash::from("shared")];
         assert_eq!(shared.len(), 1);
-        assert_eq!(shared[0].node.as_ref(), "leaf");
+        assert_eq!(shared[0].node.as_str(), "leaf");
         assert_eq!(shared[0].depth, 1);
     }
 }

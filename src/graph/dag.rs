@@ -12,29 +12,30 @@ use serde::ser::{SerializeMap, Serializer};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::fmt;
-use std::sync::Arc;
+
+use crate::domain::{Address, Func, Hash};
 
 #[derive(Debug, Clone, Default)]
 pub struct Node {
-    pub parents: HashSet<Arc<str>>,
-    pub children: HashSet<Arc<str>>,
+    pub parents: HashSet<Hash>,
+    pub children: HashSet<Hash>,
     pub data: Value,
     pub time: u64,
 }
 
 #[derive(Debug, Clone)]
 pub struct NodeTime {
-    pub node: Arc<str>,
+    pub node: Hash,
     pub time: u64,
 }
 
 #[derive(Debug, Clone)]
 pub struct Dag {
-    nodes: HashMap<Arc<str>, Node>,
+    nodes: HashMap<Hash, Node>,
     /// Реестр удалённых узлов: хэш -> логический номер удаления.
     /// Номер детерминирован (порядок удалений), а не привязан к системным часам,
     /// чтобы состояние совпадало на всех репликах.
-    added: HashMap<Arc<str>, u64>,
+    added: HashMap<Hash, u64>,
     /// Счётчик логических номеров удаления (монотонно растёт).
     added_seq: u64,
 }
@@ -49,8 +50,8 @@ pub const MAX_ADDED_ENTRIES: usize = 100_000;
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct TxVar {
-    ca: Arc<str>,
-    to: Arc<str>,
+    ca: Address,
+    to: Address,
     val: u64,
     msg: Option<String>,
 }
@@ -89,12 +90,12 @@ impl Dag {
 
     pub fn add_node_with_parents(
         &mut self,
-        tx_hash: Arc<str>,
+        tx_hash: Hash,
         tx: Tx,
         sign: String,
-        func: String,
+        func: Func,
     ) -> Result<(), String> {
-        let (ca, to, val, msg) = if func == TRANSFER_TOKEN {
+        let (ca, to, val, msg) = if func == Func::TransferToken {
             // Ошибка извлечения `var` не должна ронять узел — возвращаем её как Result.
             let TxVar { ca, to, val, msg } = extract_from_var_struct(&tx)?;
             (Some(ca), Some(to), Some(val), Some(msg))
@@ -102,10 +103,10 @@ impl Dag {
             (None, None, None, None)
         };
 
-        let existing_parents: HashSet<Arc<str>> = tx
+        let existing_parents: HashSet<Hash> = tx
             .prnts
             .iter()
-            .filter(|p| self.nodes.contains_key(p.as_ref()))
+            .filter(|p| self.nodes.contains_key(p))
             .cloned()
             .collect();
 
@@ -119,15 +120,15 @@ impl Dag {
         }
 
         let data_json = json!({
-            "prnts": tx.prnts.iter().map(|p| p.as_ref()).collect::<Vec<&str>>(),
-            "hash": tx_hash.as_ref(),
-            "addr": tx.addr.as_ref(),
+            "prnts": tx.prnts.iter().map(|p| p.as_str()).collect::<Vec<&str>>(),
+            "hash": tx_hash.as_str(),
+            "addr": tx.addr.as_str(),
             "seq": tx.seq,
             "sign": sign,
             "func": func,
             "var": {
-                "ca": ca.as_ref(),
-                "to": to.as_ref(),
+                "ca": ca.as_ref().map(|a| a.as_str()),
+                "to": to.as_ref().map(|a| a.as_str()),
                 "val": val,
                 "msg": msg,
             }
@@ -149,21 +150,21 @@ impl Dag {
     }
 
     // Получение данных узла из новой структуры.
-    pub fn get_node_data(&self, node: &str) -> Option<&Value> {
+    pub fn get_node_data(&self, node: &Hash) -> Option<&Value> {
         self.nodes.get(node).map(|n| &n.data)
     }
 
-    pub fn get_node_keys(&self) -> Vec<Arc<str>> {
+    pub fn get_node_keys(&self) -> Vec<Hash> {
         self.nodes.keys().cloned().collect()
     }
 
     /// Возвращает иммутабельную ссылку на таблицу узлов.
-    pub fn get_nodes(&self) -> &HashMap<Arc<str>, Node> {
+    pub fn get_nodes(&self) -> &HashMap<Hash, Node> {
         &self.nodes
     }
 
     /// Возвращает мутабельную ссылку на узел по ключу, если он существует.
-    pub fn get_node_mut(&mut self, key: &Arc<str>) -> Option<&mut Node> {
+    pub fn get_node_mut(&mut self, key: &Hash) -> Option<&mut Node> {
         self.nodes.get_mut(key)
     }
 
@@ -199,7 +200,7 @@ impl Dag {
     }
 
     // Возвращает `true`, если узел существует в `nodes`.
-    pub fn contains_node(&self, node: &Arc<str>) -> bool {
+    pub fn contains_node(&self, node: &Hash) -> bool {
         self.nodes.contains_key(node)
     }
 
@@ -208,7 +209,7 @@ impl Dag {
         self.nodes.len()
     }
 
-    pub fn remove_node(&mut self, node: Arc<str>) {
+    pub fn remove_node(&mut self, node: Hash) {
         if let Some(removed_node) = self.nodes.remove(&node) {
             // Удаляем ссылку на удаленный узел у его родителей
             for parent_hash in &removed_node.parents {
@@ -243,7 +244,7 @@ impl Dag {
         if self.added.len() <= max {
             return;
         }
-        let mut entries: Vec<(Arc<str>, u64)> =
+        let mut entries: Vec<(Hash, u64)> =
             self.added.iter().map(|(k, v)| (k.clone(), *v)).collect();
         // Старые — в начале; при равных номерах порядок стабилен по хэшу.
         entries.sort_by(|a, b| a.1.cmp(&b.1).then_with(|| a.0.cmp(&b.0)));
@@ -253,7 +254,7 @@ impl Dag {
         }
     }
 
-    pub fn remove_nodes(&mut self, nodes: Vec<Arc<str>>) -> Result<(), String> {
+    pub fn remove_nodes(&mut self, nodes: Vec<Hash>) -> Result<(), String> {
         for node in nodes {
             if self.contains_node(&node) {
                 self.remove_node(node);
@@ -262,12 +263,12 @@ impl Dag {
         Ok(())
     }
 
-    pub fn is_node_added(&self, node: &Arc<str>) -> bool {
+    pub fn is_node_added(&self, node: &Hash) -> bool {
         self.added.contains_key(node)
     }
 
-    pub fn compute_descendants_with_depth_and_weight(&self) -> HashMap<Arc<str>, Vec<NodeInfo>> {
-        let node_keys: HashSet<Arc<str>> = self.nodes.keys().cloned().collect();
+    pub fn compute_descendants_with_depth_and_weight(&self) -> HashMap<Hash, Vec<NodeInfo>> {
+        let node_keys: HashSet<Hash> = self.nodes.keys().cloned().collect();
         compute_descendants_with_depth_and_weight(&self.nodes, &node_keys)
     }
 
@@ -276,9 +277,9 @@ impl Dag {
         get_nodes_by_depth(&self.nodes)
     }
 
-    pub fn compute_weights_for_batch(&self, nodes: &[Arc<str>]) -> HashMap<Arc<str>, f64> {
+    pub fn compute_weights_for_batch(&self, nodes: &[Hash]) -> HashMap<Hash, f64> {
         // Преобразуем срез узлов в HashSet для совместимости с compute_descendants_with_depth_and_weight
-        let nodes_to_process: HashSet<Arc<str>> = nodes.iter().cloned().collect();
+        let nodes_to_process: HashSet<Hash> = nodes.iter().cloned().collect();
         // Вызываем существующую функцию для вычисления потомков с весами
         let descendants_map =
             compute_descendants_with_depth_and_weight(&self.nodes, &nodes_to_process);
@@ -305,7 +306,7 @@ impl Serialize for Node {
             &self
                 .parents
                 .iter()
-                .map(|arc| arc.as_ref())
+                .map(|h| h.as_str())
                 .collect::<Vec<&str>>(),
         )?;
         map.serialize_entry(
@@ -313,7 +314,7 @@ impl Serialize for Node {
             &self
                 .children
                 .iter()
-                .map(|arc| arc.as_ref())
+                .map(|h| h.as_str())
                 .collect::<Vec<&str>>(),
         )?;
         map.serialize_entry("data", &self.data)?;
@@ -341,8 +342,8 @@ impl<'de> Deserialize<'de> for Node {
             where
                 V: MapAccess<'de>,
             {
-                let mut parents = None;
-                let mut children = None;
+                let mut parents: Option<HashSet<Hash>> = None;
+                let mut children: Option<HashSet<Hash>> = None;
                 let mut data = None;
                 let mut time = None;
 
@@ -350,11 +351,11 @@ impl<'de> Deserialize<'de> for Node {
                     match key.as_str() {
                         "parents" => {
                             let parents_vec: Vec<String> = map.next_value()?;
-                            parents = Some(parents_vec.into_iter().map(Arc::from).collect());
+                            parents = Some(parents_vec.into_iter().map(Hash::from).collect());
                         }
                         "children" => {
                             let children_vec: Vec<String> = map.next_value()?;
-                            children = Some(children_vec.into_iter().map(Arc::from).collect());
+                            children = Some(children_vec.into_iter().map(Hash::from).collect());
                         }
                         "data" => data = Some(map.next_value::<Value>()?),
                         "time" => time = Some(map.next_value()?),
@@ -391,8 +392,8 @@ impl Serialize for Dag {
         // монотонный счётчик удалений, иначе удалённые узлы «воскреснут» после
         // рестарта, а номера продолжат расходиться (нарушение инварианта).
         let mut map = serializer.serialize_map(Some(3))?;
-        let nodes: HashMap<&str, &Node> = self.nodes.iter().map(|(k, v)| (k.as_ref(), v)).collect();
-        let added: HashMap<&str, &u64> = self.added.iter().map(|(k, v)| (k.as_ref(), v)).collect();
+        let nodes: HashMap<&str, &Node> = self.nodes.iter().map(|(k, v)| (k.as_str(), v)).collect();
+        let added: HashMap<&str, &u64> = self.added.iter().map(|(k, v)| (k.as_str(), v)).collect();
         map.serialize_entry("nodes", &nodes)?;
         map.serialize_entry("added", &added)?;
         map.serialize_entry("added_seq", &self.added_seq)?;
@@ -420,8 +421,8 @@ impl<'de> Deserialize<'de> for Dag {
                 V: MapAccess<'de>,
             {
                 // Инициализируем поля для хранения данных
-                let mut nodes = None;
-                let mut added = None;
+                let mut nodes: Option<HashMap<Hash, Node>> = None;
+                let mut added: Option<HashMap<Hash, u64>> = None;
                 let mut added_seq = None;
 
                 // Читаем ключи и значения из map
@@ -429,23 +430,23 @@ impl<'de> Deserialize<'de> for Dag {
                     match key.as_str() {
                         "nodes" => {
                             // Десериализуем nodes как HashMap<String, Node>
-                            let nodes_map: HashMap<String, Node> = map.next_value()?;
-                            // Преобразуем ключи String в Arc<str>
+                            let nodes_map: HashMap<Hash, Node> = map.next_value()?;
+                            // Преобразуем ключи String в доменный Hash
                             nodes = Some(
                                 nodes_map
                                     .into_iter()
-                                    .map(|(k, v)| (Arc::from(k.as_str()), v))
+                                    .map(|(k, v)| (Hash::from(k.as_str()), v))
                                     .collect(),
                             );
                         }
                         "added" => {
                             // Десериализуем added как HashMap<String, u64>
-                            let added_map: HashMap<String, u64> = map.next_value()?;
-                            // Преобразуем ключи String в Arc<str>
+                            let added_map: HashMap<Hash, u64> = map.next_value()?;
+                            // Преобразуем ключи String в доменный Hash
                             added = Some(
                                 added_map
                                     .into_iter()
-                                    .map(|(k, v)| (Arc::from(k.as_str()), v))
+                                    .map(|(k, v)| (Hash::from(k.as_str()), v))
                                     .collect(),
                             );
                         }
@@ -461,7 +462,7 @@ impl<'de> Deserialize<'de> for Dag {
 
                 // Проверяем наличие обязательного поля nodes, added может быть пустым
                 let nodes = nodes.unwrap_or_default();
-                let added: HashMap<Arc<str>, u64> = added.unwrap_or_default();
+                let added: HashMap<Hash, u64> = added.unwrap_or_default();
                 // Для старых снапшотов без счётчика восстанавливаем его из максимума.
                 let added_seq =
                     added_seq.unwrap_or_else(|| added.values().copied().max().unwrap_or(0));
@@ -528,25 +529,21 @@ mod tests {
         let mut dag = Dag::new();
         let tx = Tx {
             prnts: vec![],
-            addr: Arc::from("addr"),
+            addr: Address::from("addr"),
             seq: 0,
             // var не соответствует TxVar: функция transferToken ожидает структуру.
             var: json!({ "unexpected": true }),
         };
-        let result = dag.add_node_with_parents(
-            Arc::from("hash"),
-            tx,
-            String::new(),
-            "transferToken".to_string(),
-        );
+        let result =
+            dag.add_node_with_parents(Hash::from("hash"), tx, String::new(), Func::TransferToken);
         assert!(result.is_err(), "вредоносный var не должен паниковать");
         assert_eq!(dag.get_node_count(), 0);
     }
 
-    fn valid_tx(parents: Vec<Arc<str>>) -> Tx {
+    fn valid_tx(parents: Vec<Hash>) -> Tx {
         Tx {
             prnts: parents,
-            addr: Arc::from("addr"),
+            addr: Address::from("addr"),
             seq: 0,
             var: json!({ "ca": "a", "to": "b", "val": 1, "msg": "m" }),
         }
@@ -555,21 +552,21 @@ mod tests {
     #[test]
     fn add_creates_bidirectional_parent_child_links() {
         let mut dag = Dag::new();
-        let parent: Arc<str> = Arc::from("parent");
+        let parent = Hash::from("parent");
         dag.add_node_with_parents(
             parent.clone(),
             valid_tx(vec![]),
             String::new(),
-            "transferToken".to_string(),
+            Func::TransferToken,
         )
         .unwrap();
 
-        let child: Arc<str> = Arc::from("child");
+        let child = Hash::from("child");
         dag.add_node_with_parents(
             child.clone(),
             valid_tx(vec![parent.clone()]),
             String::new(),
-            "transferToken".to_string(),
+            Func::TransferToken,
         )
         .unwrap();
 
@@ -583,13 +580,13 @@ mod tests {
     #[test]
     fn add_ignores_parent_missing_from_dag() {
         let mut dag = Dag::new();
-        let node: Arc<str> = Arc::from("n");
+        let node = Hash::from("n");
         // Родитель отсутствует в Dag: связь не создаётся, но узел добавляется.
         dag.add_node_with_parents(
             node.clone(),
-            valid_tx(vec![Arc::from("ghost")]),
+            valid_tx(vec![Hash::from("ghost")]),
             String::new(),
-            "transferToken".to_string(),
+            Func::TransferToken,
         )
         .unwrap();
         assert!(dag.get_node_mut(&node).unwrap().parents.is_empty());
@@ -598,20 +595,20 @@ mod tests {
     #[test]
     fn remove_node_moves_it_to_added_and_clears_links() {
         let mut dag = Dag::new();
-        let parent: Arc<str> = Arc::from("parent");
+        let parent = Hash::from("parent");
         dag.add_node_with_parents(
             parent.clone(),
             valid_tx(vec![]),
             String::new(),
-            "transferToken".to_string(),
+            Func::TransferToken,
         )
         .unwrap();
-        let child: Arc<str> = Arc::from("child");
+        let child = Hash::from("child");
         dag.add_node_with_parents(
             child.clone(),
             valid_tx(vec![parent.clone()]),
             String::new(),
-            "transferToken".to_string(),
+            Func::TransferToken,
         )
         .unwrap();
 
@@ -630,76 +627,76 @@ mod tests {
     #[test]
     fn remove_nodes_skips_absent_and_removes_present() {
         let mut dag = Dag::new();
-        let a: Arc<str> = Arc::from("a");
+        let a = Hash::from("a");
         dag.add_node_with_parents(
             a.clone(),
             valid_tx(vec![]),
             String::new(),
-            "transferToken".to_string(),
+            Func::TransferToken,
         )
         .unwrap();
 
-        dag.remove_nodes(vec![a.clone(), Arc::from("absent")])
+        dag.remove_nodes(vec![a.clone(), Hash::from("absent")])
             .unwrap();
 
         assert!(!dag.contains_node(&a));
         assert!(dag.is_node_added(&a));
-        assert!(!dag.is_node_added(&Arc::from("absent")));
+        assert!(!dag.is_node_added(&Hash::from("absent")));
     }
 
     #[test]
     fn added_sequence_is_monotonic_and_deterministic() {
         let mut dag = Dag::new();
         for i in 0..3u32 {
-            let node: Arc<str> = Arc::from(format!("n{i}").as_str());
+            let node = Hash::from(format!("n{i}").as_str());
             dag.add_node_with_parents(
                 node.clone(),
                 valid_tx(vec![]),
                 String::new(),
-                "transferToken".to_string(),
+                Func::TransferToken,
             )
             .unwrap();
             dag.remove_node(node);
         }
         // Логические номера отражают порядок удаления, а не системное время.
-        assert_eq!(dag.added.get(&Arc::from("n0")), Some(&1));
-        assert_eq!(dag.added.get(&Arc::from("n1")), Some(&2));
-        assert_eq!(dag.added.get(&Arc::from("n2")), Some(&3));
+        assert_eq!(dag.added.get(&Hash::from("n0")), Some(&1));
+        assert_eq!(dag.added.get(&Hash::from("n1")), Some(&2));
+        assert_eq!(dag.added.get(&Hash::from("n2")), Some(&3));
     }
 
     #[test]
     fn added_evicts_oldest_beyond_limit() {
         let mut dag = Dag::new();
         for i in 0..5u32 {
-            let node: Arc<str> = Arc::from(format!("n{i}").as_str());
+            let node = Hash::from(format!("n{i}").as_str());
             dag.add_node_with_parents(
                 node.clone(),
                 valid_tx(vec![]),
                 String::new(),
-                "transferToken".to_string(),
+                Func::TransferToken,
             )
             .unwrap();
             dag.remove_node(node);
         }
         // Оставляем только 2 самые новые записи.
         dag.evict_added_to(2);
-        assert!(!dag.is_node_added(&Arc::from("n0")));
-        assert!(!dag.is_node_added(&Arc::from("n1")));
-        assert!(!dag.is_node_added(&Arc::from("n2")));
-        assert!(dag.is_node_added(&Arc::from("n3")));
-        assert!(dag.is_node_added(&Arc::from("n4")));
+        assert!(!dag.is_node_added(&Hash::from("n0")));
+        assert!(!dag.is_node_added(&Hash::from("n1")));
+        assert!(!dag.is_node_added(&Hash::from("n2")));
+        assert!(dag.is_node_added(&Hash::from("n3")));
+        assert!(dag.is_node_added(&Hash::from("n4")));
     }
 
     #[test]
     fn added_and_seq_survive_serialization_roundtrip() {
         let mut dag = Dag::new();
         for i in 0..2u32 {
-            let node: Arc<str> = Arc::from(format!("n{i}").as_str());
+            let node = Hash::from(format!("n{i}").as_str());
             dag.add_node_with_parents(
                 node.clone(),
                 valid_tx(vec![]),
                 String::new(),
-                "transferToken".to_string(),
+                Func::TransferToken,
             )
             .unwrap();
             dag.remove_node(node);
@@ -708,23 +705,23 @@ mod tests {
         let json = serde_json::to_string(&dag).unwrap();
         let restored: Dag = serde_json::from_str(&json).unwrap();
 
-        assert!(restored.is_node_added(&Arc::from("n0")));
-        assert!(restored.is_node_added(&Arc::from("n1")));
+        assert!(restored.is_node_added(&Hash::from("n0")));
+        assert!(restored.is_node_added(&Hash::from("n1")));
         assert_eq!(restored.added_seq, 2);
 
         // Новое удаление после восстановления продолжает нумерацию.
         let mut restored = restored;
-        let node: Arc<str> = Arc::from("n2");
+        let node = Hash::from("n2");
         restored
             .add_node_with_parents(
                 node.clone(),
                 valid_tx(vec![]),
                 String::new(),
-                "transferToken".to_string(),
+                Func::TransferToken,
             )
             .unwrap();
         restored.remove_node(node);
-        assert_eq!(restored.added.get(&Arc::from("n2")), Some(&3));
+        assert_eq!(restored.added.get(&Hash::from("n2")), Some(&3));
     }
 
     #[test]
