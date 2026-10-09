@@ -192,19 +192,25 @@ fn latency_stats(latencies: &mut [f64]) -> Latency {
 }
 
 /// Печатает человекочитаемый отчёт в stdout.
-pub fn print_report(report: &Report) {
+///
+/// `show_params` управляет строкой «параметры»: в демо-режиме (запуск без
+/// аргументов) она пропускается — фактические параметры там задаются
+/// внутренними демо-дефолтами, а не явными флагами.
+pub fn print_report(report: &Report, show_params: bool) {
     println!("=== loadgen: отчёт ===");
-    println!(
-        "параметры: узлов={}, tx={:?}, duration_sec={:?}, tps={}, concurrency={}, accounts={}, parents={}, seed={}",
-        report.params.nodes,
-        report.params.tx,
-        report.params.duration_sec,
-        report.params.tps,
-        report.params.concurrency,
-        report.params.accounts,
-        report.params.parents,
-        report.params.seed,
-    );
+    if show_params {
+        println!(
+            "параметры: узлов={}, tx={:?}, duration_sec={:?}, tps={}, concurrency={}, accounts={}, parents={}, seed={}",
+            report.params.nodes,
+            report.params.tx,
+            report.params.duration_sec,
+            report.params.tps,
+            report.params.concurrency,
+            report.params.accounts,
+            report.params.parents,
+            report.params.seed,
+        );
+    }
     println!(
         "принято: {}/{} (достигнуто {:.1} TPS)",
         report.accepted, report.attempted, report.achieved_tps

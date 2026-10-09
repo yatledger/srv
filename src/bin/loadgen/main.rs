@@ -211,7 +211,7 @@ async fn run(cfg: LoadgenConfig) -> Result<bool, Box<dyn std::error::Error + Sen
     let dag_totals = cluster.dag_totals().await;
 
     let report = report::build_report(&cfg, &load, &dag_totals, &redis_url);
-    report::print_report(&report);
+    report::print_report(&report, !cfg.is_demo());
     if let Some(path) = &cfg.json_out {
         report::write_json(&report, path)?;
         println!("JSON-отчёт записан: {}", path.display());
