@@ -1,3 +1,9 @@
+//! HTTP-сервер: маршрутизация публичного и внутреннего API, хендлеры.
+//!
+//! Транзакционная логика вынесена в [`crate::tx_logic`], очистка — в
+//! [`crate::cleanup`]. Здесь остаются только схемы запросов/ответов и
+//! привязка к axum.
+
 use axum::{
     Router,
     extract::{DefaultBodyLimit, Json, State},
@@ -5,7 +11,7 @@ use axum::{
     routing::{get, post},
 };
 
-use std::fs; // Для чтения файла.
+use std::fs;
 
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
@@ -22,9 +28,12 @@ use raft::command::Request;
 use crate::graph::weights::NodeDepth;
 use crate::web::ApiResponse;
 
+/// Стандартный ответ внутреннего API.
 #[derive(Deserialize, Serialize, Debug)]
 pub struct StandardResponse {
+    /// Статус операции.
     pub status: String,
+    /// Необязательное пояснение.
     pub message: Option<String>,
 }
 
@@ -334,6 +343,7 @@ struct GenesisTransaction {
     hash: String, // Хэш генезис-узла.
     data: TxRead,
 }
+/// Хендлер загрузки генезис-транзакций из `genesis.json`.
 pub async fn load_genesis(
     State(app): State<App>,
 ) -> (StatusCode, Json<ApiResponse<StandardResponse>>) {
@@ -437,11 +447,14 @@ struct FullGraphResponse {
     message: Option<String>,
 }
 
+/// Запрос на архивацию и удаление «тяжёлых» узлов.
 #[derive(Deserialize, Serialize, Clone, Debug)]
 pub struct HeavyNodesRequest {
+    /// Хэши узлов-кандидатов.
     pub nodes: Vec<Arc<str>>,
 }
 
+/// Запускает HTTP-сервер: собирает роутеры и слушает `bind_addr`.
 pub async fn start_server(app: App, bind_addr: String) -> Result<(), Box<dyn std::error::Error>> {
     // Публичный API: доступен без аутентификации.
     let public = Router::new()

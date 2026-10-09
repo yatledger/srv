@@ -17,8 +17,11 @@ use crate::utils::{ordered_sum, validate_func, validate_parents, verify_signatur
 /// Тело запроса на добавление транзакции.
 #[derive(Deserialize, Serialize, Clone, Debug)]
 pub struct TxRead {
+    /// Транзакция.
     pub tx: Tx,
+    /// Подпись ed25519 в hex.
     pub sign: String,
+    /// Имя функции, входящее в подписываемый контент.
     pub func: String,
 }
 
@@ -35,6 +38,7 @@ pub enum PrepareError {
 }
 
 impl PrepareError {
+    /// Возвращает текст ошибки.
     pub fn message(&self) -> &str {
         match self {
             PrepareError::Invalid(m) | PrepareError::Internal(m) | PrepareError::Conflict(m) => m,

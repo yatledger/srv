@@ -85,6 +85,7 @@ pub struct AppConfig {
 /// Ошибка загрузки/валидации конфигурации.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ConfigError {
+    /// Человекочитаемое описание ошибки.
     pub message: String,
 }
 

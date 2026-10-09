@@ -16,19 +16,38 @@ use tracing::{debug, error};
 #[derive(Serialize, Deserialize, Debug)]
 #[serde(untagged)]
 pub enum ApiResponse<T> {
+    /// Успешный ответ с полезной нагрузкой.
     Success(T),
-    Error { status: String, message: String },
+    /// Ответ с ошибкой.
+    Error {
+        /// Статус.
+        status: String,
+        /// Сообщение.
+        message: String,
+    },
 }
 
 /// Универсальный тип ошибки для внутрикластерных HTTP-вызовов.
 #[derive(Debug, thiserror::Error)]
 pub enum ApiRouterError {
+    /// Ошибка сети/транспорта.
     #[error("network error: {0}")]
     Network(reqwest::Error),
+    /// HTTP-ответ с неуспешным статусом.
     #[error("HTTP error {status}: {text}")]
-    Http { status: StatusCode, text: String },
+    Http {
+        /// HTTP-статус.
+        status: StatusCode,
+        /// Тело ответа.
+        text: String,
+    },
+    /// Приложение вернуло ошибку.
     #[error("API error: {message}")]
-    Api { message: String },
+    Api {
+        /// Сообщение об ошибке.
+        message: String,
+    },
+    /// Не удалось разобрать ответ.
     #[error("deserialization error: {0}")]
     Deserialization(serde_json::Error),
 }
@@ -51,8 +70,8 @@ pub struct HttpClient {
     client: Client,
     internal_token: String,
 }
-
 impl HttpClient {
+    /// Создаёт клиент с таймаутами и кластерным токеном.
     pub fn new(timeout: Duration, connect_timeout: Duration, internal_token: String) -> Self {
         // `build` может упасть только при инициализации TLS-бэкенда; не паникуем,
         // а откатываемся на клиент по умолчанию.
@@ -106,6 +125,7 @@ pub struct Router {
 }
 
 impl Router {
+    /// Создаёт API-роутер с общим внутрикластерным клиентом.
     pub fn new(timeout: Duration, connect_timeout: Duration, internal_token: String) -> Self {
         Self {
             http: HttpClient::new(timeout, connect_timeout, internal_token),

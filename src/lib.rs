@@ -1,3 +1,10 @@
+//! `dagdb` — распределённый узел хранения DAG-графа транзакций поверх Raft.
+//!
+//! Публичная точка входа — [`start_raft`], собирающая узел из конфигурации
+//! [`AppConfig`](config::AppConfig). Внутренние модули (граф, Raft, очистка)
+//! доступны ограниченно; публичный HTTP-API отделён от внутреннего
+//! (Raft/mng) и требует кластерного токена.
+
 use openraft::Config;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -27,29 +34,38 @@ use raft::router::Router as RaftRouter;
 use raft::store::{StateMachineData, StateMachineStore};
 use raft::typ;
 
-// Псевдоним для списка смежности графа: узел -> список его детей или родителей.
+/// Псевдоним для списка смежности графа: узел -> список его детей или родителей.
 pub type Adjacency = HashMap<Arc<str>, Vec<Arc<str>>>;
 
 pub use raft::log::LogStore;
 
+/// Идентификатор узла кластера.
 pub type NodeId = u64;
 
+/// Транзакция — узел DAG. Подписывается ключом `addr` (ed25519, base58);
+/// хэш покрывает все поля вместе с `func` (см. [`utils::ordered_sum`]).
 #[derive(Debug, Clone, Deserialize, Serialize, Default)]
 pub struct Tx {
+    /// Хэши родительских транзакций.
     prnts: Vec<Arc<str>>,
+    /// Публичный ключ ed25519 в base58.
     addr: Arc<str>,
+    /// Порядковый номер транзакции.
     seq: u32,
+    /// Данные вызова (структура зависит от `func`).
     var: Value,
 }
 
 openraft::declare_raft_types!(
-    /// Declare the type configuration for example K/V store.
+    /// Конфигурация типов Raft для `dagdb`: команды, ответы и данные снапшота.
     pub TypeConfig:
         D = Request,
         R = Response,
         SnapshotData = StateMachineData,
 );
 
+/// Собирает и запускает узел Raft: персистентные хранилища, сеть, Redis и
+/// [`App`]. Возвращает дескриптор Raft и состояние приложения.
 pub async fn start_raft(cfg: &AppConfig) -> Result<(typ::Raft, App), Box<dyn std::error::Error>> {
     let node_id = cfg.id;
     let http_addr = cfg.advertise_addr();
