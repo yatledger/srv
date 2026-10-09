@@ -152,13 +152,12 @@ async fn add_tx(
             (StatusCode::OK, Json(ApiResponse::Success(response)))
         }
         Err(e) => {
-            //TODO сделать ошибки как в processor
             error!("Failed to forward request to leader: {:?}", e);
             (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 Json(ApiResponse::Error {
                     status: "error".to_string(),
-                    message: "Failed to contact leader".to_string(),
+                    message: format!("Failed to contact leader: {e}"),
                 }),
             )
         }
