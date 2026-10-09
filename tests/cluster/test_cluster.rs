@@ -53,7 +53,7 @@ fn make_config(id: u64, port: u16, data_dir: PathBuf, redis_url: &str) -> AppCon
         profile: Profile::Dev,
         log_format: LogFormat::Text,
         addr: "127.0.0.1".to_string(),
-        port,
+        port: Some(port),
         bind_addr: Some(addr.clone()),
         advertise_addr: Some(addr),
         data_dir,

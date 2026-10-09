@@ -9,9 +9,13 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use clap::Parser;
+use tracing::warn;
 
 /// Каталог персистентных данных по умолчанию.
 pub const DEFAULT_DATA_DIR: &str = "./data";
+
+/// Порт HTTP-сервера по умолчанию (если не заданы ни `HTTP_PORT`, ни `BIND_ADDR`).
+pub const DEFAULT_HTTP_PORT: u16 = 21001;
 
 /// Профиль окружения (O8): набор требований к конфигурации при старте.
 #[derive(clap::ValueEnum, Clone, Copy, Debug, PartialEq, Eq)]
@@ -79,9 +83,10 @@ pub struct AppConfig {
     #[arg(long, env = "ADVERTISE_HOST", default_value = "127.0.0.1")]
     pub addr: String,
 
-    /// Порт HTTP-сервера (используется, если не заданы BIND_ADDR/ADVERTISE_ADDR).
-    #[arg(long, env = "HTTP_PORT", default_value_t = 21001)]
-    pub port: u16,
+    /// Порт HTTP-сервера. Задаётся `HTTP_PORT`/`--port`; если не задан —
+    /// вычисляется из `BIND_ADDR` или берётся значение по умолчанию.
+    #[arg(long, env = "HTTP_PORT")]
+    pub port: Option<u16>,
 
     /// Полный адрес прослушивания HTTP-сервера (host:port); переопределяет host/port.
     #[arg(long, env = "BIND_ADDR")]
@@ -179,17 +184,41 @@ impl AppConfig {
     }
 
     /// Полный адрес прослушивания HTTP-сервера.
+    ///
+    /// Приоритет (F2): явный `HTTP_PORT`/`--port` перекрывает `BIND_ADDR`, который мог
+    /// прийти из `.env` (dotenvy подхватывает его из CWD и навязывает всем узлам один
+    /// адрес). Явно переданный в процессе/CLI `BIND_ADDR` без `HTTP_PORT` используется
+    /// как есть. Иначе — `0.0.0.0:<порт из PORT, BIND_ADDR или DEFAULT_HTTP_PORT>`.
     pub fn bind_addr(&self) -> String {
-        self.bind_addr
-            .clone()
-            .unwrap_or_else(|| format!("0.0.0.0:{}", self.port))
+        match (&self.bind_addr, self.port) {
+            (_, Some(port)) => {
+                if let Some(bind) = &self.bind_addr {
+                    warn!("HTTP_PORT={port} перекрывает BIND_ADDR={bind}: слушаем 0.0.0.0:{port}");
+                }
+                format!("0.0.0.0:{port}")
+            }
+            (Some(bind), None) => bind.clone(),
+            (None, None) => format!("0.0.0.0:{}", self.effective_port()),
+        }
     }
 
     /// Полный адрес узла, публикуемый другим узлам кластера.
     pub fn advertise_addr(&self) -> String {
         self.advertise_addr
             .clone()
-            .unwrap_or_else(|| format!("{}:{}", self.addr, self.port))
+            .unwrap_or_else(|| format!("{}:{}", self.addr, self.effective_port()))
+    }
+
+    /// Эффективный порт узла: явный `HTTP_PORT`/`--port`, иначе порт из `BIND_ADDR`,
+    /// иначе [`DEFAULT_HTTP_PORT`]. Используется для advertise-адреса и значения по умолчанию.
+    fn effective_port(&self) -> u16 {
+        if let Some(port) = self.port {
+            return port;
+        }
+        if let Some(port) = self.bind_addr.as_deref().and_then(port_from_addr) {
+            return port;
+        }
+        DEFAULT_HTTP_PORT
     }
 
     /// Строка подключения к Redis. Обязательна.
@@ -327,6 +356,12 @@ impl AppConfig {
     }
 }
 
+/// Извлекает порт из `host:port` (`0.0.0.0:21004` → `Some(21004)`).
+/// Возвращает `None`, если порт отсутствует или не парсится как `u16`.
+fn port_from_addr(addr: &str) -> Option<u16> {
+    addr.rsplit_once(':')?.1.parse().ok()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -337,7 +372,7 @@ mod tests {
             profile: Profile::Dev,
             log_format: LogFormat::Text,
             addr: "127.0.0.1".to_string(),
-            port: 21001,
+            port: Some(21001),
             bind_addr: None,
             advertise_addr: None,
             data_dir: PathBuf::from(DEFAULT_DATA_DIR),
@@ -375,6 +410,41 @@ mod tests {
     fn bind_addr_falls_back_to_port() {
         let cfg = base_config();
         assert_eq!(cfg.bind_addr(), "0.0.0.0:21001");
+    }
+
+    /// F2 (регрессионный): явный `HTTP_PORT` не должен теряться молча, даже если
+    /// `BIND_ADDR` подсунут из `.env` общим адресом `21001`.
+    #[test]
+    fn bind_addr_prefers_explicit_port_over_bind_addr() {
+        let mut cfg = base_config();
+        cfg.bind_addr = Some("0.0.0.0:21001".to_string());
+        cfg.port = Some(21004);
+        assert_eq!(cfg.bind_addr(), "0.0.0.0:21004");
+    }
+
+    #[test]
+    fn bind_addr_uses_bind_when_port_not_set() {
+        let mut cfg = base_config();
+        cfg.bind_addr = Some("0.0.0.0:21004".to_string());
+        cfg.port = None;
+        assert_eq!(cfg.bind_addr(), "0.0.0.0:21004");
+    }
+
+    #[test]
+    fn bind_addr_defaults_when_neither_set() {
+        let mut cfg = base_config();
+        cfg.bind_addr = None;
+        cfg.port = None;
+        assert_eq!(cfg.bind_addr(), format!("0.0.0.0:{DEFAULT_HTTP_PORT}"));
+    }
+
+    #[test]
+    fn advertise_addr_uses_port_from_bind_when_port_not_set() {
+        let mut cfg = base_config();
+        cfg.bind_addr = Some("0.0.0.0:21004".to_string());
+        cfg.port = None;
+        cfg.advertise_addr = None;
+        assert_eq!(cfg.advertise_addr(), "127.0.0.1:21004");
     }
 
     #[test]

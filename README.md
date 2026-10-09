@@ -96,8 +96,8 @@ cp .env.example .env
 | `LOG_FORMAT` | `--log-format` | `text` | Формат логов: `text`/`json` |
 | `ADVERTISE_ADDR` | `--advertise-addr` | — | Адрес узла, публикуемый кластеру (`host:port`) |
 | `ADVERTISE_HOST` | `--addr` | `127.0.0.1` | Хост для `ADVERTISE_ADDR`, если адрес не задан явно |
-| `BIND_ADDR` | `--bind-addr` | `0.0.0.0:<HTTP_PORT>` | Адрес прослушивания HTTP |
-| `HTTP_PORT` | `--port` | `21001` | Порт HTTP (если не задан `BIND_ADDR`) |
+| `BIND_ADDR` | `--bind-addr` | `0.0.0.0:21001` | Адрес прослушивания HTTP (см. приоритет ниже) |
+| `HTTP_PORT` | `--port` | — | Порт HTTP; **перекрывает `BIND_ADDR`** (F2) |
 | `DATA_DIR` | `--data-dir` | `./data` | Каталог персистентных данных |
 | `REDIS_URL` | `--redis-url` | — (обязательно) | Строка подключения к Redis |
 | `INTERNAL_API_TOKEN` | `--internal-api-token` | — (обязательно) | Кластерный токен внутреннего API |
@@ -117,6 +117,11 @@ cp .env.example .env
 
 В `DATA_DIR` создаются `raft-log.redb` (Raft-лог, vote, committed) и
 `state-machine.redb` (DAG, `added`, membership, снапшот).
+
+Приоритет адреса прослушивания (F2): явный `HTTP_PORT`/`--port` **перекрывает** `BIND_ADDR`
+(с предупреждением в логе), поэтому `.env` с общим `BIND_ADDR` не мешает запускать узлы на разных
+портах. `BIND_ADDR`, заданный в процессе/CLI без `HTTP_PORT`, используется как есть. Если не задано
+ни то, ни другое — `0.0.0.0:21001`.
 
 ## Запуск кластера (4 узла + Redis)
 
@@ -153,6 +158,9 @@ docker compose up --build
    ```
 
    (Строка `REDIS_URL` и `INTERNAL_API_TOKEN` берутся из `.env`.)
+   Не помещайте `NODE_ID`/`BIND_ADDR`/`HTTP_PORT`/`ADVERTISE_ADDR`/`DATA_DIR` в общий `.env`:
+   он читается из рабочего каталога всеми узлами. В частности, оставшийся в `.env`
+   `ADVERTISE_ADDR` навяжет всем узлам один адрес.
 
 3. Инициализируйте кластер и загрузите генезис (см. примеры ниже). Готовый сценарий —
    [`test.sh`](test.sh): поднимает 4 узла, инициализирует кластер, грузит `genesis.json`

@@ -221,7 +221,7 @@ mod tests {
             profile: Profile::Dev,
             log_format: LogFormat::Text,
             addr: "127.0.0.1".to_string(),
-            port: 21001,
+            port: Some(21001),
             bind_addr: None,
             advertise_addr: None,
             data_dir: PathBuf::from("./data/test-redis-timeout"),

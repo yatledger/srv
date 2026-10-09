@@ -43,7 +43,7 @@ async fn start_node(redis_url: &str) -> Harness {
         profile: Profile::Dev,
         log_format: LogFormat::Text,
         addr: "127.0.0.1".to_string(),
-        port,
+        port: Some(port),
         bind_addr: Some(addr.clone()),
         advertise_addr: Some(addr.clone()),
         data_dir: dir,
