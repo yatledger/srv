@@ -165,7 +165,7 @@ docker compose up --build
 | `GET` | `/docs` | Swagger UI |
 
 Полное описание схемы `Tx`/`var`/`func` и правил валидации — в
-[`docs/API.md`](docs/API.md).
+[`docs/api/API.md`](docs/api/API.md).
 
 ### Внутренний (требует заголовок `x-internal-token`)
 
@@ -306,8 +306,8 @@ CI (`.github/workflows/ci.yml`) выполняет fmt + clippy `-D warnings` + 
 - Rate limiter и метрики — в памяти узла (без внешнего хранилища); при
   необходимости горизонтального сбора используйте `/metrics` и внешний сборщик.
 
-Полный перечень находок и план работ — в [`docs/AUDIT.md`](docs/AUDIT.md) и
-[`docs/tz/README.md`](docs/tz/README.md). Профили конфигурации: `dev` (по
+Полный перечень находок и план работ — в [`docs/edits/audit/big-bang/`](docs/edits/audit/big-bang/)
+(первичный аудит, все задачи закрыты). Карта документации — [`docs/README.md`](docs/README.md). Профили конфигурации: `dev` (по
 умолчанию), `stage` (токен ≥16 символов), `prod` (токен ≥32 символов и явный
 `ADVERTISE_ADDR`); при старте конфигурация валидируется и все проблемы выводятся
 одним сообщением.

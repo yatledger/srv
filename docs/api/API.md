@@ -1,4 +1,7 @@
-# API dagdb (O4)
+# API dagdb
+
+> Расположение: `docs/api/` · Спецификация: [`openapi.json`](openapi.json) (OpenAPI 3.0.3),
+> отдаётся `GET /openapi.json`; минимальный Swagger UI — `GET /docs`.
 
 Спецификация публичного API — [`openapi.json`](openapi.json) (OpenAPI 3.0.3),
 доступна в рантайме по `GET /openapi.json`; минимальный Swagger UI — `GET /docs`.

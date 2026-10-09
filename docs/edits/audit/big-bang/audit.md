@@ -1,4 +1,11 @@
-# Аудит проекта `dagdb` (`yatledger/srv`)
+# Аудит big-bang: проект `dagdb` (`yatledger/srv`)
+
+> Группа: **edits/audit/big-bang** · Тип: аудит · Статус: завершён.
+> Первичный полный аудит проекта. Все находки закрыты задачами K/V/D/O (см. [`tracker.md`](tracker.md)).
+> Ссылки ниже (`src/...:NN`) указывают на состояние кода **на момент аудита** и могли устареть.
+>
+> Сопутствующие документы: [`01-critical.md`](01-critical.md), [`02-important.md`](02-important.md),
+> [`03-desirable.md`](03-desirable.md), [`04-missing.md`](04-missing.md), [`tracker.md`](tracker.md).
 
 ## 1. Общее понимание
 
@@ -109,5 +116,5 @@
 
 ## 3. Итог
 
-Подробные задачи вынесены в четыре ТЗ: [01-critical](tz/01-critical.md), [02-important](tz/02-important.md),
-[03-desirable](tz/03-desirable.md), [04-missing](tz/04-missing.md). Сводный трекер — [tz/README.md](tz/README.md).
+Подробные задачи вынесены в четыре ТЗ: [01-critical](01-critical.md), [02-important](02-important.md),
+[03-desirable](03-desirable.md), [04-missing](04-missing.md). Сводный трекер — [tracker.md](tracker.md).
