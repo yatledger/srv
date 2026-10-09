@@ -1426,7 +1426,7 @@ checksum = "a4895175b425cb1f87721b59f0f286c2092bd4af812243672510e1ac53e2e0ad"
 [[package]]
 name = "openraft"
 version = "0.10.0"
-source = "git+https://github.com/databendlabs/openraft#54ffb00dbb8ed7518d0363c4846813761ff80e92"
+source = "git+https://github.com/databendlabs/openraft?rev=54ffb00#54ffb00dbb8ed7518d0363c4846813761ff80e92"
 dependencies = [
  "anyerror",
  "byte-unit",
@@ -1448,7 +1448,7 @@ dependencies = [
 [[package]]
 name = "openraft-macros"
 version = "0.10.0"
-source = "git+https://github.com/databendlabs/openraft#54ffb00dbb8ed7518d0363c4846813761ff80e92"
+source = "git+https://github.com/databendlabs/openraft?rev=54ffb00#54ffb00dbb8ed7518d0363c4846813761ff80e92"
 dependencies = [
  "chrono",
  "proc-macro2",
