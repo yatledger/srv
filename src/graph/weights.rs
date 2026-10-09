@@ -1,10 +1,9 @@
 use crate::graph::dag::Node;
 use num_cpus;
-use rayon::ThreadPoolBuilder;
 use rayon::prelude::*; // Для параллельной обработки
 use serde::Serialize;
 use std::collections::{HashMap, HashSet, VecDeque};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, OnceLock};
 
 #[derive(Debug, Clone)]
 pub struct NodeInfo {
@@ -17,6 +16,31 @@ pub struct NodeInfo {
 pub struct NodeDepth {
     pub node: Arc<str>,
     pub depth: usize,
+}
+
+/// Глобальный rayon-пул: создаётся один раз на процесс, а не на каждый вызов
+/// (находка C16). Половина доступных ядер, минимум один поток.
+fn processor_pool() -> &'static Option<rayon::ThreadPool> {
+    static POOL: OnceLock<Option<rayon::ThreadPool>> = OnceLock::new();
+    POOL.get_or_init(|| {
+        let num_threads = (num_cpus::get() / 2).max(1);
+        rayon::ThreadPoolBuilder::new()
+            .num_threads(num_threads)
+            .build()
+            .ok()
+    })
+}
+
+/// Выполняет замыкание в глобальном пуле (или в стандартном пуле rayon,
+/// если собственный создать не удалось).
+fn install_in_pool<R>(f: impl FnOnce() -> R + Send) -> R
+where
+    R: Send,
+{
+    match processor_pool() {
+        Some(pool) => pool.install(f),
+        None => f(),
+    }
 }
 
 /// Вычисляет вклад одного потомка по простой формуле: 1/depth
@@ -53,68 +77,87 @@ pub fn saturate_weight(raw: f64) -> f64 {
 
 /// Основной алгоритм: вычисляет всех потомков для каждого узла с их глубиной и весом
 /// Использует простую формулу: вес = 1/глубина
+///
+/// Обход мемоизируется: результаты для уже обработанных узлов переиспользуются
+/// (Memoization). Это убирает повторный обход общих подграфов (находка C30).
+/// Разные узлы обрабатываются параллельно в глобальном rayon-пуле.
 pub fn compute_descendants_with_depth_and_weight(
     nodes_map: &HashMap<Arc<str>, Node>,
     nodes_to_process: &HashSet<Arc<str>>,
 ) -> HashMap<Arc<str>, Vec<NodeInfo>> {
-    // Логика создания пула потоков остается прежней.
-    let available_cpus = num_cpus::get();
-    let num_threads = (available_cpus / 2).max(1);
-    let pool = ThreadPoolBuilder::new()
-        .num_threads(num_threads)
-        .build()
-        .unwrap();
+    // Единый мемоизирующий кэш на вызов, разделяемый между потоками.
+    let memo: Mutex<HashMap<Arc<str>, Arc<Vec<NodeInfo>>>> = Mutex::new(HashMap::new());
 
-    pool.install(|| {
+    install_in_pool(|| {
         nodes_to_process
             .par_iter()
             .map(|node| {
-                // REFACTORED: Передаем `nodes_map` в функцию поиска потомков.
-                let descendants = find_descendants_with_depth_and_weight(nodes_map, node);
-                (node.clone(), descendants)
+                let descendants = find_descendants_cached(nodes_map, node, &memo);
+                (node.clone(), descendants.as_ref().clone())
             })
             .collect::<HashMap<_, _>>()
     })
 }
 
-/// Находит всех потомков узла с их глубиной и весом относительно этого узла
-fn find_descendants_with_depth_and_weight(
+/// Находит потомков узла, переиспользуя мемоизированные результаты.
+fn find_descendants_cached(
     nodes_map: &HashMap<Arc<str>, Node>,
-    start_node: &str,
-) -> Vec<NodeInfo> {
+    start_node: &Arc<str>,
+    memo: &Mutex<HashMap<Arc<str>, Arc<Vec<NodeInfo>>>>,
+) -> Arc<Vec<NodeInfo>> {
+    if let Some(cached) = memo.lock().unwrap().get(start_node).cloned() {
+        return cached;
+    }
+
     let mut descendants: Vec<NodeInfo> = Vec::new();
     let mut visited: HashSet<Arc<str>> = HashSet::new();
     let mut queue: VecDeque<(Arc<str>, usize)> = VecDeque::new();
 
-    // Получаем детей из `GraphNode` в `nodes_map`.
-    if let Some(start_node_obj) = nodes_map.get(start_node) {
+    if let Some(start_node_obj) = nodes_map.get(start_node.as_ref()) {
         for child in &start_node_obj.children {
             queue.push_back((child.clone(), 1));
         }
     }
 
-    // BFS для поиска всех потомков
     while let Some((current, relative_depth)) = queue.pop_front() {
-        if visited.insert(current.clone()) {
-            let weight = calculate_weight(relative_depth);
-            descendants.push(NodeInfo {
-                node: current.clone(),
-                depth: relative_depth,
-                weight,
-            });
+        if !visited.insert(current.clone()) {
+            continue;
+        }
 
-            // Получаем детей текущего узла из `nodes_map`.
-            if let Some(current_node_obj) = nodes_map.get(current.as_ref()) {
-                for child in &current_node_obj.children {
-                    if !visited.contains(child) {
-                        queue.push_back((child.clone(), relative_depth + 1));
-                    }
+        descendants.push(NodeInfo {
+            node: current.clone(),
+            depth: relative_depth,
+            weight: calculate_weight(relative_depth),
+        });
+
+        // Если для текущего узла есть готовый результат, переиспользуем его,
+        // не обходя подграф повторно.
+        let cached = memo.lock().unwrap().get(&current).cloned();
+        if let Some(cached) = cached {
+            for d in cached.iter() {
+                let depth = relative_depth + d.depth;
+                if visited.insert(d.node.clone()) {
+                    descendants.push(NodeInfo {
+                        node: d.node.clone(),
+                        depth,
+                        weight: calculate_weight(depth),
+                    });
+                }
+            }
+        } else if let Some(current_node_obj) = nodes_map.get(current.as_ref()) {
+            for child in &current_node_obj.children {
+                if !visited.contains(child) {
+                    queue.push_back((child.clone(), relative_depth + 1));
                 }
             }
         }
     }
 
-    descendants
+    let result = Arc::new(descendants);
+    memo.lock()
+        .unwrap()
+        .insert(start_node.clone(), Arc::clone(&result));
+    result
 }
 
 /// Вычисляет глубину каждого узла в Dag относительно корневых узлов
@@ -201,5 +244,64 @@ mod tests {
         assert!(c < 1.0);
         // Экстремально большие входы ограничены сверху единицей.
         assert!(saturate_weight(f64::MAX) <= 1.0);
+    }
+
+    fn node(children: &[&str]) -> Node {
+        Node {
+            parents: Default::default(),
+            children: children.iter().map(|c| Arc::from(*c)).collect(),
+            data: serde_json::json!({}),
+            time: 0,
+        }
+    }
+
+    /// Алмаз: root -> a, root -> b, a -> shared, b -> shared, shared -> leaf.
+    fn diamond() -> HashMap<Arc<str>, Node> {
+        let mut map = HashMap::new();
+        map.insert(Arc::from("root"), node(&["a", "b"]));
+        map.insert(Arc::from("a"), node(&["shared"]));
+        map.insert(Arc::from("b"), node(&["shared"]));
+        map.insert(Arc::from("shared"), node(&["leaf"]));
+        map.insert(Arc::from("leaf"), node(&[]));
+        map
+    }
+
+    #[test]
+    fn memoized_descendants_match_expected_breadth_first_result() {
+        let map = diamond();
+        let roots: HashSet<Arc<str>> = [Arc::from("root")].into_iter().collect();
+        let result = compute_descendants_with_depth_and_weight(&map, &roots);
+
+        let mut got: Vec<(String, usize)> = result[&Arc::from("root")]
+            .iter()
+            .map(|d| (d.node.to_string(), d.depth))
+            .collect();
+        got.sort();
+
+        // shared достижим на глубине 2 (через a или b), leaf — на 3.
+        assert_eq!(
+            got,
+            vec![
+                ("a".to_string(), 1),
+                ("b".to_string(), 1),
+                ("leaf".to_string(), 3),
+                ("shared".to_string(), 2),
+            ]
+        );
+    }
+
+    #[test]
+    fn memoization_does_not_change_results_for_multiple_roots() {
+        let map = diamond();
+        let roots: HashSet<Arc<str>> = [Arc::from("root"), Arc::from("a"), Arc::from("shared")]
+            .into_iter()
+            .collect();
+        let result = compute_descendants_with_depth_and_weight(&map, &roots);
+
+        // Каждый узел вычисляется независимо и корректно.
+        let shared = &result[&Arc::from("shared")];
+        assert_eq!(shared.len(), 1);
+        assert_eq!(shared[0].node.as_ref(), "leaf");
+        assert_eq!(shared[0].depth, 1);
     }
 }
