@@ -19,10 +19,14 @@ pub struct Router {
 }
 
 impl Router {
-    pub fn new(timeout: Duration, connect_timeout: Duration, internal_token: String) -> Self {
-        Router {
-            http: HttpClient::new(timeout, connect_timeout, internal_token),
-        }
+    pub fn new(
+        timeout: Duration,
+        connect_timeout: Duration,
+        internal_token: String,
+    ) -> Result<Self, crate::web::ApiRouterError> {
+        Ok(Router {
+            http: HttpClient::new(timeout, connect_timeout, internal_token)?,
+        })
     }
 
     /// Отправляет Raft RPC и разбирает строгий JSON-ответ `Resp`.
@@ -80,5 +84,6 @@ impl Default for Router {
             Duration::from_secs(10),
             String::new(),
         )
+        .expect("сборка клиента с таймаутами не должна падать")
     }
 }

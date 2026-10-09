@@ -43,6 +43,8 @@ pub struct App {
     pub rate_limiter: Arc<RateLimiter>,
     /// Advisory-лимит размера тела запроса в байтах (O3).
     pub max_request_bytes: usize,
+    /// Доверять `X-Forwarded-For` при определении ключа rate limit (Q4/C44).
+    pub trust_proxy: bool,
     /// Сигнал graceful shutdown (O5).
     pub shutdown: Shutdown,
 }
@@ -64,6 +66,7 @@ impl App {
         metrics: Arc<Metrics>,
         rate_limiter: Arc<RateLimiter>,
         max_request_bytes: usize,
+        trust_proxy: bool,
         shutdown: Shutdown,
     ) -> Self {
         Self {
@@ -80,6 +83,7 @@ impl App {
             metrics,
             rate_limiter,
             max_request_bytes,
+            trust_proxy,
             shutdown,
         }
     }

@@ -1,0 +1,25 @@
+# S14/Q7: не тащим в build context лишнее и, главное, секреты.
+# Сам контекст нужен для COPY src/tests/benches/docs — их не исключаем.
+
+# Артефакты сборки и данные
+/target
+/data
+/logs
+/backups
+
+# Локальная конфигурация и секреты
+.env
+.env.*
+
+# Git и редакторы
+.git
+.gitignore
+.idea
+.vscode
+*.swp
+.DS_Store
+
+# Документация задач (аудит/планы) — не нужна в образе
+# (docs/api/ обязателен для include_str!, поэтому весь docs/ не исключаем)
+docs/edits
+docs/legacy

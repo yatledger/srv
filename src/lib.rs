@@ -136,7 +136,7 @@ pub async fn start_raft(
         cfg.raft_http_timeout(),
         cfg.raft_connect_timeout(),
         internal_api_token.to_string(),
-    );
+    )?;
     let network = NetworkFactory::new(raft_router);
 
     // Create a local raft instance.
@@ -153,7 +153,7 @@ pub async fn start_raft(
         cfg.http_timeout(),
         cfg.http_connect_timeout(),
         internal_api_token.to_string(),
-    );
+    )?;
 
     // Настраиваем подключение к Redis: строка подключения приходит только из окружения.
     let redis_url = cfg.redis_url()?;
@@ -177,6 +177,7 @@ pub async fn start_raft(
             cfg.public_rate_limit_burst,
         )),
         cfg.max_request_bytes(),
+        cfg.trust_proxy,
         crate::shutdown::Shutdown::new().0,
     );
 

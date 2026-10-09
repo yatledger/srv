@@ -103,9 +103,11 @@ pub struct AppConfig {
     #[arg(long, env = "INTERNAL_API_TOKEN")]
     pub internal_api_token: Option<String>,
 
-    /// Список узлов кластера в формате `id=addr,id=addr,...` (для удобства запуска).
-    #[arg(long, env = "CLUSTER_NODES")]
-    pub cluster_nodes: Option<String>,
+    /// Доверять заголовку `X-Forwarded-For` при определении ключа rate limit.
+    /// Включайте только если узел стоит за доверенным прокси/балансировщиком
+    /// (Q4/C44): иначе клиент подделает свой IP.
+    #[arg(long, env = "TRUST_PROXY", default_value_t = false)]
+    pub trust_proxy: bool,
 
     /// Таймаут HTTP-запросов приложения, секунды.
     #[arg(long, env = "HTTP_TIMEOUT_SECS", default_value_t = 10)]
@@ -328,7 +330,7 @@ mod tests {
             data_dir: PathBuf::from(DEFAULT_DATA_DIR),
             redis_url: Some("redis://localhost/0".to_string()),
             internal_api_token: Some("token".to_string()),
-            cluster_nodes: None,
+            trust_proxy: false,
             http_timeout_secs: 10,
             http_connect_timeout_secs: 3,
             raft_http_timeout_secs: 30,

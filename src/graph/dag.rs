@@ -289,6 +289,24 @@ impl Dag {
         get_nodes_by_depth(&self.nodes)
     }
 
+    /// Лёгкий снимок рёбер графа для расчёта глубин вне read-лока (Q2/C41).
+    /// Клонирует только хэши и структуру, без сериализованных `data`.
+    pub fn depth_edges_snapshot(&self) -> crate::graph::weights::DepthEdges {
+        self.nodes
+            .iter()
+            .map(|(h, n)| (h.clone(), (n.parents.len(), n.children.clone())))
+            .collect()
+    }
+
+    /// Пары `(хэш, число активных родителей)` для публичного `/pool` (Q2/C41).
+    /// Считаются под локом, но обход и сортировка — уже снаружи.
+    pub fn node_parent_counts(&self) -> Vec<(Hash, usize)> {
+        self.nodes
+            .iter()
+            .map(|(h, n)| (h.clone(), n.parents.len()))
+            .collect()
+    }
+
     pub fn compute_weights_for_batch(&self, nodes: &[Hash]) -> HashMap<Hash, f64> {
         // Преобразуем срез узлов в HashSet для совместимости с compute_descendants_with_depth_and_weight
         let nodes_to_process: HashSet<Hash> = nodes.iter().cloned().collect();

@@ -343,16 +343,14 @@ async fn pool_handler(
     axum::extract::Query(page): axum::extract::Query<PageParams>,
 ) -> (StatusCode, Json<PoolResponse>) {
     let (offset, limit) = page.resolve();
-    let state_machine = app.state_machine.state_machine.read().await;
 
-    // Считаем число активных родителей напрямую, без построения полной карты
-    // смежности `get_parents()` для всего графа.
-    let mut nodes: Vec<(Hash, usize)> = state_machine
-        .dag
-        .get_nodes()
-        .iter()
-        .map(|(node, data)| (node.clone(), data.parents.len()))
-        .collect();
+    // Q2/C41: под read-локом снимаем только лёгкий снимок (хэш → число
+    // родителей). Сортировка и пагинация выполняются вне лока, чтобы не
+    // блокировать apply (write-лок state machine) на больших графах.
+    let mut nodes: Vec<(Hash, usize)> = {
+        let state_machine = app.state_machine.state_machine.read().await;
+        state_machine.dag.node_parent_counts()
+    };
     // Сортируем по возрастанию числа активных родителей (меньше — выше приоритет),
     // при равенстве — стабильно по хэшу.
     nodes.sort_by(|a, b| a.1.cmp(&b.1).then_with(|| a.0.cmp(&b.0)));
@@ -432,8 +430,21 @@ async fn get_full_graph_handler(
     axum::extract::Query(page): axum::extract::Query<PageParams>,
 ) -> (StatusCode, Json<FullGraphResponse>) {
     let (offset, limit) = page.resolve();
-    let state_machine = app.state_machine.state_machine.read().await;
-    let mut nodes = state_machine.dag.get_nodes_by_depth();
+
+    // Q2/C41: под read-локом берём только лёгкий снимок рёбер (хэш → родители/дети),
+    // а топологический обход и сортировку делаем вне лока, не блокируя apply.
+    let edges = {
+        let state_machine = app.state_machine.state_machine.read().await;
+        state_machine.dag.depth_edges_snapshot()
+    };
+
+    let depths = crate::graph::weights::compute_depths_from_edges(&edges);
+    let mut nodes: Vec<NodeDepth> = depths
+        .into_iter()
+        .map(|(node, depth)| NodeDepth { node, depth })
+        .collect();
+    nodes.sort_by(|a, b| a.depth.cmp(&b.depth).then_with(|| a.node.cmp(&b.node)));
+
     let total = nodes.len();
     // Пагинация уже отсортированного результата (узлы упорядочены по глубине).
     nodes = nodes.into_iter().skip(offset).take(limit).collect();
@@ -803,6 +814,19 @@ mod tests {
         };
         assert_eq!(p.resolve(), (40, 20));
     }
+
+    #[test]
+    fn client_key_prefers_forwarded_only_when_trusted() {
+        let mut req = axum::http::Request::builder()
+            .body(axum::body::Body::empty())
+            .unwrap();
+        req.headers_mut()
+            .insert("x-forwarded-for", "203.0.113.7, 10.0.0.1".parse().unwrap());
+        // За доверенным прокси берём первый адрес.
+        assert_eq!(client_key(&req, true), "203.0.113.7");
+        // Без доверия заголовок игнорируется; ConnectInfo нет → "unknown".
+        assert_eq!(client_key(&req, false), "unknown");
+    }
 }
 
 /// Запрос на архивацию и удаление «тяжёлых» узлов.
@@ -812,18 +836,38 @@ pub struct HeavyNodesRequest {
     pub nodes: Vec<Hash>,
 }
 
+/// Определяет ключ rate limit для запроса (Q4/C44).
+///
+/// Без доверенного прокси ключ — IP из `ConnectInfo`. Если узел стоит за
+/// доверенным прокси (`TRUST_PROXY=true`), приоритет отдаётся первому адресу в
+/// `X-Forwarded-For`; при отсутствии заголовка — снова `ConnectInfo`. Без
+/// `ConnectInfo` и заголовка — общий ключ `"unknown"`.
+fn client_key(request: &axum::extract::Request, trust_proxy: bool) -> String {
+    if trust_proxy
+        && let Some(forwarded) = request
+            .headers()
+            .get("x-forwarded-for")
+            .and_then(|v| v.to_str().ok())
+        && let Some(first) = forwarded.split(',').next()
+        && !first.trim().is_empty()
+    {
+        return first.trim().to_string();
+    }
+
+    request
+        .extensions()
+        .get::<ConnectInfo<SocketAddr>>()
+        .map(|c| c.0.ip().to_string())
+        .unwrap_or_else(|| "unknown".to_string())
+}
+
 /// Middleware ограничения частоты публичного API (O3).
 async fn rate_limit_middleware(
     State(app): State<App>,
     request: axum::extract::Request,
     next: Next,
 ) -> Response {
-    // Адрес клиента берём из расширений (ConnectInfo), при отсутствии — общий ключ.
-    let key = request
-        .extensions()
-        .get::<ConnectInfo<SocketAddr>>()
-        .map(|c| c.0.ip().to_string())
-        .unwrap_or_else(|| "unknown".to_string());
+    let key = client_key(&request, app.trust_proxy);
 
     if app.rate_limiter.check(&key) {
         next.run(request).await

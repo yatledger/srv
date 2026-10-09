@@ -72,23 +72,25 @@ pub struct HttpClient {
 }
 impl HttpClient {
     /// Создаёт клиент с таймаутами и кластерным токеном.
-    pub fn new(timeout: Duration, connect_timeout: Duration, internal_token: String) -> Self {
-        // `build` может упасть только при инициализации TLS-бэкенда; не паникуем,
-        // а откатываемся на клиент по умолчанию.
+    ///
+    /// Возвращает ошибку, если сборка `reqwest::Client` не удалась (Q3/C42):
+    /// молчаливый fallback на клиент без таймаутов маскировал мисконфигурацию и
+    /// приводил к зависанию внутрикластерных вызовов.
+    pub fn new(
+        timeout: Duration,
+        connect_timeout: Duration,
+        internal_token: String,
+    ) -> Result<Self, ApiRouterError> {
         let client = Client::builder()
             .timeout(timeout)
             .connect_timeout(connect_timeout)
             .pool_idle_timeout(Duration::from_secs(45))
             .pool_max_idle_per_host(10)
-            .build()
-            .unwrap_or_else(|e| {
-                error!("Failed to build internal HTTP client ({e}); using default client");
-                Client::new()
-            });
-        Self {
+            .build()?;
+        Ok(Self {
             client,
             internal_token,
-        }
+        })
     }
 
     /// Отправляет JSON POST и возвращает статус и тело ответа.
@@ -130,10 +132,14 @@ pub struct Router {
 
 impl Router {
     /// Создаёт API-роутер с общим внутрикластерным клиентом.
-    pub fn new(timeout: Duration, connect_timeout: Duration, internal_token: String) -> Self {
-        Self {
-            http: HttpClient::new(timeout, connect_timeout, internal_token),
-        }
+    pub fn new(
+        timeout: Duration,
+        connect_timeout: Duration,
+        internal_token: String,
+    ) -> Result<Self, ApiRouterError> {
+        Ok(Self {
+            http: HttpClient::new(timeout, connect_timeout, internal_token)?,
+        })
     }
 
     /// Отправляет запрос для внутреннего API приложения.
@@ -183,6 +189,7 @@ impl Default for Router {
             Duration::from_secs(3),
             String::new(),
         )
+        .expect("сборка клиента с таймаутами не должна падать")
     }
 }
 

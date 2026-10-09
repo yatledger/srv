@@ -168,12 +168,7 @@
           },
           "addr": { "type": "string", "description": "Публичный ключ ed25519 в base58" },
           "seq": { "type": "integer", "minimum": 0 },
-          "var": {
-            "oneOf": [
-              { "$ref": "#/components/schemas/TransferTokenVar" },
-              { "type": "object", "description": "Произвольные данные для неизвестных func" }
-            ]
-          }
+          "var": { "$ref": "#/components/schemas/TransferTokenVar" }
         }
       },
       "TransferTokenVar": {

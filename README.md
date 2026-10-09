@@ -95,12 +95,13 @@ cp .env.example .env
 | `APP_PROFILE` | `--profile` | `dev` | Профиль окружения: `dev`/`stage`/`prod` |
 | `LOG_FORMAT` | `--log-format` | `text` | Формат логов: `text`/`json` |
 | `ADVERTISE_ADDR` | `--advertise-addr` | — | Адрес узла, публикуемый кластеру (`host:port`) |
+| `ADVERTISE_HOST` | `--addr` | `127.0.0.1` | Хост для `ADVERTISE_ADDR`, если адрес не задан явно |
 | `BIND_ADDR` | `--bind-addr` | `0.0.0.0:<HTTP_PORT>` | Адрес прослушивания HTTP |
 | `HTTP_PORT` | `--port` | `21001` | Порт HTTP (если не задан `BIND_ADDR`) |
 | `DATA_DIR` | `--data-dir` | `./data` | Каталог персистентных данных |
 | `REDIS_URL` | `--redis-url` | — (обязательно) | Строка подключения к Redis |
 | `INTERNAL_API_TOKEN` | `--internal-api-token` | — (обязательно) | Кластерный токен внутреннего API |
-| `CLUSTER_NODES` | `--cluster-nodes` | — | Список узлов `id=addr,...` (для запуска) |
+| `TRUST_PROXY` | `--trust-proxy` | `false` | Доверять `X-Forwarded-For` в rate limit (только за доверенным прокси) |
 | `RUST_LOG` | — | `info` | Уровень логов |
 | `HTTP_TIMEOUT_SECS` | — | `10` | Таймаут HTTP-запросов приложения |
 | `HTTP_CONNECT_TIMEOUT_SECS` | — | `3` | Таймаут установки HTTP-соединения |

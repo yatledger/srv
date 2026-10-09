@@ -59,7 +59,7 @@ fn make_config(id: u64, port: u16, data_dir: PathBuf, redis_url: &str) -> AppCon
         data_dir,
         redis_url: Some(redis_url.to_string()),
         internal_api_token: Some(TOKEN.to_string()),
-        cluster_nodes: None,
+        trust_proxy: false,
         http_timeout_secs: 10,
         http_connect_timeout_secs: 3,
         raft_http_timeout_secs: 30,

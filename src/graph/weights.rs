@@ -2,7 +2,7 @@ use crate::graph::dag::Node;
 use num_cpus;
 use rayon::prelude::*; // Для параллельной обработки
 use serde::Serialize;
-use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
 use std::sync::{Arc, Mutex, OnceLock};
 
 use crate::domain::Hash;
@@ -156,45 +156,40 @@ fn find_descendants_cached(
     result
 }
 
-/// Вычисляет глубину каждого узла в Dag относительно корневых узлов
-/// Глубина корневых узлов (без родителей) = 0
-/// Глубина остальных узлов = максимальная глубина родителей + 1
-pub fn compute_node_depths(nodes_map: &BTreeMap<Hash, Node>) -> HashMap<Hash, usize> {
+/// Лёгкое представление графа для расчёта глубин: для каждого узла — число
+/// родителей и список детей. Достаточно, чтобы отвязать вычисление от лока
+/// state machine (Q2/C41).
+pub type DepthEdges = BTreeMap<Hash, (usize, BTreeSet<Hash>)>;
+
+/// Вычисляет глубину каждого узла по [`DepthEdges`] (топологический обход).
+///
+/// Глубина корневых узлов (без родителей) = 0, иначе — максимальная глубина
+/// родителей + 1. Не требует доступа к полному DAG, поэтому вызывается уже
+/// после снятия read-лока.
+pub fn compute_depths_from_edges(edges: &DepthEdges) -> HashMap<Hash, usize> {
     let mut depths: HashMap<Hash, usize> = HashMap::new();
     let mut in_degree: HashMap<Hash, usize> = HashMap::new();
     let mut queue: VecDeque<Hash> = VecDeque::new();
 
-    // Инициализация: подсчитываем входящие степени для каждого узла
-    for (node_id, node) in nodes_map {
-        in_degree.insert(node_id.clone(), node.parents.len());
-
-        // Если у узла нет родителей - он корневой, глубина = 0
-        if node.parents.is_empty() {
+    for (node_id, (parents, _)) in edges {
+        in_degree.insert(node_id.clone(), *parents);
+        if *parents == 0 {
             depths.insert(node_id.clone(), 0);
             queue.push_back(node_id.clone());
         }
     }
 
-    // Топологическая сортировка с вычислением глубины
     while let Some(current_node) = queue.pop_front() {
         let current_depth = depths[&current_node];
-
-        // Получаем узел из nodes_map
-        if let Some(node) = nodes_map.get(&current_node) {
-            // Обрабатываем всех детей текущего узла
-            for child in &node.children {
-                // Уменьшаем входящую степень ребенка
+        if let Some((_, children)) = edges.get(&current_node) {
+            for child in children {
                 if let Some(degree) = in_degree.get_mut(child) {
                     *degree -= 1;
-
-                    // Обновляем глубину ребенка (берем максимум из уже известной глубины и новой)
                     let new_depth = current_depth + 1;
                     depths
                         .entry(child.clone())
                         .and_modify(|d| *d = (*d).max(new_depth))
                         .or_insert(new_depth);
-
-                    // Если все родители ребенка обработаны, добавляем его в очередь
                     if *degree == 0 {
                         queue.push_back(child.clone());
                     }
@@ -204,6 +199,17 @@ pub fn compute_node_depths(nodes_map: &BTreeMap<Hash, Node>) -> HashMap<Hash, us
     }
 
     depths
+}
+
+/// Вычисляет глубину каждого узла в Dag относительно корневых узлов
+/// Глубина корневых узлов (без родителей) = 0
+/// Глубина остальных узлов = максимальная глубина родителей + 1
+pub fn compute_node_depths(nodes_map: &BTreeMap<Hash, Node>) -> HashMap<Hash, usize> {
+    let edges: DepthEdges = nodes_map
+        .iter()
+        .map(|(h, n)| (h.clone(), (n.parents.len(), n.children.clone())))
+        .collect();
+    compute_depths_from_edges(&edges)
 }
 
 /// Возвращает список всех узлов с их глубинами, отсортированный по глубине
@@ -298,5 +304,51 @@ mod tests {
         assert_eq!(shared.len(), 1);
         assert_eq!(shared[0].node.as_str(), "leaf");
         assert_eq!(shared[0].depth, 1);
+    }
+
+    #[test]
+    fn depths_from_edges_match_full_computation() {
+        // Q2/C41: расчёт по лёгкому снимку рёбер обязан совпадать с полным
+        // обходом DAG и быть детерминированным.
+        let mut map = BTreeMap::new();
+        for (name, parents, children) in [
+            ("root", &[][..], &["a", "b"][..]),
+            ("a", &["root"][..], &["shared"][..]),
+            ("b", &["root"][..], &["shared"][..]),
+            ("shared", &["a", "b"][..], &["leaf"][..]),
+            ("leaf", &["shared"][..], &[][..]),
+        ] {
+            map.insert(
+                Hash::from(name),
+                Node {
+                    parents: parents.iter().map(|p| Hash::from(*p)).collect(),
+                    children: children.iter().map(|c| Hash::from(*c)).collect(),
+                    data: serde_json::json!({}),
+                },
+            );
+        }
+
+        let from_full = compute_node_depths(&map);
+        let edges: DepthEdges = map
+            .iter()
+            .map(|(h, n)| (h.clone(), (n.parents.len(), n.children.clone())))
+            .collect();
+        let from_edges = compute_depths_from_edges(&edges);
+        assert_eq!(from_full, from_edges);
+        // Глубины: root=0, a=b=1, shared=2, leaf=3.
+        assert_eq!(from_edges[&Hash::from("root")], 0);
+        assert_eq!(from_edges[&Hash::from("shared")], 2);
+        assert_eq!(from_edges[&Hash::from("leaf")], 3);
+
+        // Сортированный список глубин стабилен (порядок не зависит от HashMap).
+        let first: Vec<(String, usize)> = get_nodes_by_depth(&map)
+            .into_iter()
+            .map(|d| (d.node.to_string(), d.depth))
+            .collect();
+        let second: Vec<(String, usize)> = get_nodes_by_depth(&map)
+            .into_iter()
+            .map(|d| (d.node.to_string(), d.depth))
+            .collect();
+        assert_eq!(first, second);
     }
 }
