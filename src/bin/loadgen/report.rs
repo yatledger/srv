@@ -332,10 +332,10 @@ pub fn format_request_header(n: u64, worker: usize, signed: &SignedTx) -> String
     )
 }
 
-/// Строит строки запроса: цель, `func`, `prnts`, `var`, `sign`.
-pub fn format_request_lines(signed: &SignedTx, leader: &str) -> Vec<String> {
+/// Строит строки запроса: целевой узел (с ролью), `func`, `prnts`, `var`, `sign`.
+pub fn format_request_lines(signed: &SignedTx, node: &str, role: &str) -> Vec<String> {
     let mut lines = Vec::new();
-    lines.push(format!("→ POST {leader}   func={}", signed.func));
+    lines.push(format!("→ POST {node} ({role})   func={}", signed.func));
     let prnts = signed.tx.parents();
     let short: Vec<String> = prnts.iter().map(|p| shorten(p.as_str(), 3, 3)).collect();
     lines.push(format!("  prnts[{}] {}", prnts.len(), short.join(", ")));
@@ -396,7 +396,8 @@ pub fn render_frame(
     n: u64,
     worker: usize,
     signed: &SignedTx,
-    leader: &str,
+    node: &str,
+    role: &str,
     outcome: &ClientOutcome,
     palette: &Palette,
 ) -> String {
@@ -412,7 +413,7 @@ pub fn render_frame(
     let mut out = String::new();
     out.push_str(&palette.dim(&top));
     out.push('\n');
-    for line in format_request_lines(signed, leader) {
+    for line in format_request_lines(signed, node, role) {
         out.push_str(&palette.dim(&format!("│ {line}")));
         out.push('\n');
     }
@@ -535,12 +536,15 @@ mod tests {
             0,
             &signed(),
             "http://127.0.0.1:21001",
+            "follower → лидер",
             &outcome(200, 14.7),
             &palette,
         );
         assert!(block.contains("#12"));
         assert!(block.contains("worker 0"));
         assert!(block.contains("seq 12"));
+        assert!(block.contains("http://127.0.0.1:21001"));
+        assert!(block.contains("follower → лидер"));
         assert!(block.contains("func=transferToken"));
         assert!(block.contains("200 OK"));
         assert!(block.contains("14.7 ms"));
@@ -553,9 +557,25 @@ mod tests {
     #[test]
     fn render_frame_colors_when_enabled() {
         let palette = Palette::new(true);
-        let ok = render_frame(1, 0, &signed(), "http://x", &outcome(200, 1.0), &palette);
+        let ok = render_frame(
+            1,
+            0,
+            &signed(),
+            "http://x",
+            "лидер",
+            &outcome(200, 1.0),
+            &palette,
+        );
         assert!(ok.contains("\x1b[32m"), "успех должен быть зелёным");
-        let fail = render_frame(1, 0, &signed(), "http://x", &outcome(400, 1.0), &palette);
+        let fail = render_frame(
+            1,
+            0,
+            &signed(),
+            "http://x",
+            "лидер",
+            &outcome(400, 1.0),
+            &palette,
+        );
         assert!(fail.contains("\x1b[31m"), "отказ должен быть красным");
     }
 

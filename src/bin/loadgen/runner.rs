@@ -1,9 +1,12 @@
 //! Драйвер нагрузки: конкурентные sender-задачи, статусы и задержки.
 //!
-//! Нагрузка отправляется **лидеру напрямую**: follower может ещё не применить
-//! свежие родители, и его ранняя проверка состояния (`tx_logic::validate_against_state`)
-//! ложно отклонила бы валидную транзакцию. Запись через лидера реплицируется на
-//! все узлы, поэтому консистентность реплик всё равно проверяется.
+//! Каждый запрос уходит на **случайный** узел кластера (не обязательно лидер):
+//! не-лидер сам перенаправляет запись лидеру (`server.rs::add_tx`). Чтобы ранняя
+//! проверка состояния на выбранном узле (`tx_logic::validate_against_state`) не
+//! отклонила валидную транзакцию из-за отставания реплики, родителей берём из
+//! `/pool` **того же узла**, которому шлём: если он вернул эти `prnts`, они есть
+//! в его применённом снимке, а значит есть и у лидера (лидер впереди реплик).
+//! Консистентность реплик проверяется по итоговым размерам DAG.
 //!
 //! Аккаунты делятся на непрерывные блоки, по блоку на sender-задачу, поэтому
 //! `seq` каждого аккаунта монотонен без межзадачной синхронизации, а запросы в
@@ -89,7 +92,7 @@ pub async fn run_load(
     if nodes.is_empty() {
         return Err("нет узлов для нагрузки".into());
     }
-    let leader = resolve_leader(nodes).await?;
+    let leader_id = resolve_leader(nodes).await?;
     let generator = Arc::new(Generator::new(gen_cfg.clone()));
 
     let workers = run_cfg.concurrency.max(1).min(generator.account_count());
@@ -107,13 +110,13 @@ pub async fn run_load(
         let generator = Arc::clone(&generator);
         let issued = Arc::clone(&issued);
         let frame = Arc::clone(&frame);
-        let leader = leader.clone();
+        let nodes = nodes.to_vec();
         let run_cfg = run_cfg.clone();
         let palette = palette.clone();
         handles.push(tokio::spawn(async move {
             worker_loop(
-                worker_id, workers, &generator, &leader, &run_cfg, budget, deadline, &issued,
-                &frame, &palette, verbose,
+                worker_id, workers, &generator, &nodes, leader_id, &run_cfg, budget, deadline,
+                &issued, &frame, &palette, verbose,
             )
             .await
         }));
@@ -137,7 +140,8 @@ async fn worker_loop(
     worker_id: usize,
     workers: usize,
     generator: &Generator,
-    leader: &str,
+    nodes: &[(u64, String)],
+    leader_id: u64,
     run_cfg: &RunConfig,
     budget: Option<u64>,
     deadline: Option<Instant>,
@@ -151,17 +155,17 @@ async fn worker_loop(
         .build()
         .expect("sender reqwest client");
     let mut rng = Prng::new(run_cfg_seed(worker_id));
-    // Пауза разыгрывается **отдельным** ГПСЧ, чтобы не сдвигать поток параметров
-    // транзакций (детерминизм при одном `--seed`).
+    // Пауза и выбор узла разыгрываются **отдельными** ГПСЧ, чтобы не сдвигать
+    // поток параметров транзакций (детерминизм при одном `--seed`).
     let mut sleep_rng = Prng::new(sleep_seed(worker_id));
+    let mut node_rng = Prng::new(node_seed(worker_id));
 
     // Аккаунты потока — непрерывный блок без пересечения с другими задачами.
     let (account_start, account_len) = account_block(worker_id, workers, generator.account_count());
     let mut account_step = 0usize;
 
-    // Родителей берём с лидера: его DAG — актуальный источник живых узлов.
-    let mut pool = fetch_pool(&client, leader).await;
-    let mut outcomes = Vec::new();
+    // Пул родителей — **отдельно на каждый узел** (`None` — ещё не загружен).
+    let mut pools: Vec<Option<Vec<Hash>>> = vec![None; nodes.len()];
 
     // Пейсинг под целевой TPS: на задачу приходится tps / workers.
     let per_worker_tps = if run_cfg.tps == 0 {
@@ -177,6 +181,7 @@ async fn worker_loop(
     let start = Instant::now();
     let mut next_slot = start;
     let mut since_pool_refresh = 0usize;
+    let mut outcomes = Vec::new();
 
     loop {
         if let Some(limit) = budget
@@ -202,16 +207,29 @@ async fn worker_loop(
         // Пауза `--sleep` (ортогональна TPS; сюда же попадает демо-джиттер).
         sleep_between(&run_cfg.sleep, &mut sleep_rng).await;
 
-        // Обновляем пул живых узлов, чтобы нагрузка шла и на новые транзакции.
+        // Случайный узел-приёмник: не-лидер сам перенаправит запись лидеру.
+        let node_idx = node_rng.below(nodes.len() as u64) as usize;
+        let (node_id, node_url) = &nodes[node_idx];
+
+        // Обновляем пул узла-приёмника, чтобы родители брались из его снимка.
         since_pool_refresh += 1;
-        if since_pool_refresh >= 128 || pool.len() < 2 {
-            let fresh = fetch_pool(&client, leader).await;
+        let need_refresh = pools[node_idx].is_none()
+            || since_pool_refresh >= 128
+            || pools[node_idx].as_ref().is_some_and(|p| p.len() < 2);
+        if need_refresh {
+            let fresh = fetch_pool(&client, node_url).await;
             if !fresh.is_empty() {
-                pool = fresh;
+                pools[node_idx] = Some(fresh);
             }
             since_pool_refresh = 0;
         }
 
+        let Some(pool) = pools[node_idx].as_ref() else {
+            // Пул ещё не получен (узел недоступен) — даём ему время и не считаем
+            // это отдельным запросом.
+            tokio::time::sleep(Duration::from_millis(20)).await;
+            continue;
+        };
         let Some(k) = generator.effective_parent_count(pool.len()) else {
             tokio::time::sleep(Duration::from_millis(20)).await;
             continue;
@@ -219,19 +237,20 @@ async fn worker_loop(
 
         let index = account_start + (account_step % account_len);
         account_step += 1;
-        let parents = choose_parents(&pool, k, &mut rng);
+        let parents = choose_parents(pool, k, &mut rng);
         // «Шлюз» аккаунта: блоки аккаунтов и так не пересекаются, но лок делает
         // контракт устойчивым и сериализует выдачу `seq`.
         let signed = {
             let _gate = generator.account_gate(index);
             generator.build(index, &parents, &mut rng)
         };
-        let outcome = send_with_retry(&client, leader, &signed, verbose).await;
+        let outcome = send_with_retry(&client, node_url, &signed, verbose).await;
         if run_cfg.show_tx {
             let n = frame.fetch_add(1, Ordering::Relaxed) + 1;
             // Блок печатается под общим мьютексом — при `concurrency > 1` строки
             // разных транзакций не перемешиваются (R6).
-            let block = render_frame(n, worker_id, &signed, leader, &outcome, palette);
+            let role = node_role(*node_id, leader_id);
+            let block = render_frame(n, worker_id, &signed, node_url, role, &outcome, palette);
             let _guard = OUTPUT_LOCK.lock().unwrap_or_else(|e| e.into_inner());
             print!("{block}");
         }
@@ -239,6 +258,15 @@ async fn worker_loop(
     }
 
     outcomes
+}
+
+/// Роль узла-приёмника для пометки в выводе: лидер или форвард к лидеру.
+fn node_role(node_id: u64, leader_id: u64) -> &'static str {
+    if node_id == leader_id {
+        "лидер"
+    } else {
+        "follower → лидер"
+    }
 }
 
 /// Выдерживает паузу `sleep` (фиксированную, случайную или отсутствующую).
@@ -282,10 +310,17 @@ fn sleep_seed(worker_id: usize) -> u64 {
         .wrapping_add(0xA5A5_5A5A_1234_5678)
 }
 
-/// Отправляет транзакцию лидеру с ретраями на временные сбои (503/сеть).
+/// Seed **отдельного** ГПСЧ выбора узла-приёмника (не влияет на поток параметров).
+fn node_seed(worker_id: usize) -> u64 {
+    (worker_id as u64)
+        .wrapping_mul(0x9E37_79B9_7F4A_7C15)
+        .wrapping_add(0x5DEE_CE66_D1B5_4A32)
+}
+
+/// Отправляет транзакцию на выбранный узел с ретраями на временные сбои (503/сеть).
 async fn send_with_retry(
     client: &reqwest::Client,
-    leader: &str,
+    node_url: &str,
     signed: &SignedTx,
     verbose: bool,
 ) -> ClientOutcome {
@@ -298,7 +333,7 @@ async fn send_with_retry(
     let mut attempt = 0u32;
     loop {
         let started = Instant::now();
-        match client.post(leader).json(&body).send().await {
+        match client.post(node_url).json(&body).send().await {
             Ok(resp) => {
                 let latency_ms = started.elapsed().as_secs_f64() * 1000.0;
                 let status = resp.status().as_u16();
@@ -353,10 +388,10 @@ fn parse_reason(body: &str, status: u16) -> String {
         .unwrap_or_else(|| format!("http {status}"))
 }
 
-/// Определяет URL лидера, опрашивая `/mng/metrics` всех узлов.
+/// Определяет id лидера, опрашивая `/mng/metrics` всех узлов.
 async fn resolve_leader(
     nodes: &[(u64, String)],
-) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
+) -> Result<u64, Box<dyn std::error::Error + Send + Sync>> {
     let client = reqwest::Client::builder()
         .timeout(Duration::from_secs(10))
         .build()?;
@@ -370,7 +405,7 @@ async fn resolve_leader(
                 && let Ok(v) = resp.json::<Value>().await
                 && v["current_leader"].as_u64() == Some(*id)
             {
-                return Ok(url.clone());
+                return Ok(*id);
             }
         }
         tokio::time::sleep(Duration::from_millis(50)).await;
@@ -434,5 +469,25 @@ mod tests {
                 assert!(seen.iter().all(|&c| c == 1));
             }
         }
+    }
+
+    #[test]
+    fn node_role_distinguishes_leader_and_forward() {
+        assert_eq!(node_role(1, 1), "лидер");
+        assert_eq!(node_role(2, 1), "follower → лидер");
+    }
+
+    #[test]
+    fn node_pick_is_bounded_and_deterministic() {
+        // Выбор узла другим ГПСЧ не мешает воспроизводимости: тот же seed —
+        // та же последовательность.
+        let seq = |seed: u64| {
+            let mut rng = Prng::new(seed);
+            (0..50).map(|_| rng.below(3)).collect::<Vec<_>>()
+        };
+        assert_eq!(seq(node_seed(0)), seq(node_seed(0)));
+        assert!(seq(node_seed(0)).iter().all(|&i| i < 3));
+        // Разные воркеры — разные потоки (не залипают на одном узле).
+        assert_ne!(seq(node_seed(0)), seq(node_seed(1)));
     }
 }
