@@ -697,4 +697,42 @@ mod tests {
         assert!(!guard.dag.contains_node(&node_hash));
         assert!(guard.dag.is_node_added(&node_hash));
     }
+
+    #[tokio::test]
+    async fn apply_rejects_missing_parent_at_apply_time() {
+        use crate::raft::typ::Entry;
+        use openraft::entry::RaftEntry;
+
+        // Даже если ранняя проверка на входе пропустила запрос, state machine
+        // (авторитетная точка) отклоняет его при применении.
+        let path = temp_path("apply-missing-parent");
+        let store = StateMachineStore::open(&path).unwrap();
+        let mut sm = store.clone();
+
+        let req = Request::Add {
+            hash: Arc::from("child"),
+            tx: tx(&["nonexistent-parent"]),
+            sign: String::new(),
+            func: "transferToken".to_string(),
+        };
+        let entry = Entry::new(
+            openraft::testing::log_id::<TypeConfig>(1, 1, 1),
+            EntryPayload::Normal(req),
+        );
+
+        let res = sm.apply(vec![entry]).await.unwrap();
+        assert!(
+            res[0].value.as_deref().unwrap().starts_with("Error"),
+            "родитель отсутствует — применение должно быть отклонено"
+        );
+        assert!(
+            !store
+                .state_machine
+                .read()
+                .await
+                .dag
+                .contains_node(&Arc::from("child")),
+            "невалидная команда не меняет DAG"
+        );
+    }
 }
