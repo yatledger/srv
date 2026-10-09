@@ -15,11 +15,10 @@ use tracing::{debug, error, info};
 use crate::Tx;
 use crate::app::App;
 use crate::raft;
-use crate::utils::*;
+use crate::tx_logic::{self, PrepareError, TxRead};
 use raft::api::*;
 use raft::command::Request;
 
-use crate::graph::dag::extract_from_var_struct;
 use crate::graph::weights::NodeDepth;
 use crate::web::ApiResponse;
 
@@ -29,8 +28,22 @@ pub struct StandardResponse {
     pub message: Option<String>,
 }
 
-/// Готовит транзакцию к записи в Raft: проверяет родителей, `func`, структуру
-/// `var`, вычисляет канонический хэш и проверяет подпись.
+/// Переводит доменную ошибку подготовки в HTTP-ответ.
+fn prepare_error_response(err: PrepareError) -> (StatusCode, Json<ApiResponse<StandardResponse>>) {
+    let status = match err {
+        PrepareError::Invalid(_) | PrepareError::Conflict(_) => StatusCode::BAD_REQUEST,
+        PrepareError::Internal(_) => StatusCode::INTERNAL_SERVER_ERROR,
+    };
+    (
+        status,
+        Json(ApiResponse::Error {
+            status: "error".to_string(),
+            message: err.message().to_string(),
+        }),
+    )
+}
+
+/// Готовит транзакцию к записи в Raft, используя доменный слой `tx_logic`.
 ///
 /// Проверки, зависящие от состояния (существование узла и родителей), здесь
 /// выполняются лишь как **ранний отказ** по текущему снимку реплики. Истина —
@@ -42,97 +55,12 @@ async fn validate_and_prepare_tx(
     app: &App,
     payload: &TxRead,
 ) -> Result<Arc<str>, (StatusCode, Json<ApiResponse<StandardResponse>>)> {
-    // Проверка родителей
-    if let Err(err) = validate_parents(&payload.tx.prnts) {
-        return Err((
-            StatusCode::BAD_REQUEST,
-            Json(ApiResponse::Error {
-                status: "error".to_string(),
-                message: err,
-            }),
-        ));
-    }
+    let hash = tx_logic::validate_structure(payload).map_err(prepare_error_response)?;
 
-    // Проверка допустимости функции: func входит в подписываемый контент.
-    if let Err(err) = validate_func(&payload.func) {
-        return Err((
-            StatusCode::BAD_REQUEST,
-            Json(ApiResponse::Error {
-                status: "error".to_string(),
-                message: err,
-            }),
-        ));
-    }
-
-    // Структура var валидируется до попадания в state machine (client_write).
-    if payload.func == "transferToken" {
-        match extract_from_var_struct(&payload.tx).and_then(|var| var.validate()) {
-            Ok(()) => {}
-            Err(err) => {
-                return Err((
-                    StatusCode::BAD_REQUEST,
-                    Json(ApiResponse::Error {
-                        status: "error".to_string(),
-                        message: err,
-                    }),
-                ));
-            }
-        }
-    }
-
-    // Проверка подписи и вычисление хэша
-    let tx_hash_bytes = match ordered_sum(&payload.tx, &payload.func) {
-        Ok(bytes) => bytes,
-        Err(e) => {
-            return Err((
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(ApiResponse::Error {
-                    status: "error".to_string(),
-                    message: format!("Ordered sum error: {}", e),
-                }),
-            ));
-        }
-    };
-
-    // Проверяем подпись ed25519 над каноническим хэшем контента.
-    if let Err(err) = verify_signature(&payload.tx.addr, &payload.sign, tx_hash_bytes.as_bytes()) {
-        return Err((
-            StatusCode::BAD_REQUEST,
-            Json(ApiResponse::Error {
-                status: "error".to_string(),
-                message: err,
-            }),
-        ));
-    }
-
-    let tx_hash = Arc::from(tx_hash_bytes.to_hex().to_string());
-
-    // Блокируем state machine для проверок, зависящих от состояния (существование узлов)
     let state_machine = app.state_machine.state_machine.read().await;
-
-    // Проверяем, что узел еще не существует
-    if state_machine.dag.contains_node(&tx_hash) {
-        return Err((
-            StatusCode::BAD_REQUEST,
-            Json(ApiResponse::Error {
-                status: "error".to_string(),
-                message: "Node already exists".to_string(),
-            }),
-        ));
-    }
-
-    // Проверяем, что каждый родитель существует
-    for parent in &payload.tx.prnts {
-        if !state_machine.dag.contains_node(parent) && !state_machine.dag.is_node_added(parent) {
-            return Err((
-                StatusCode::BAD_REQUEST,
-                Json(ApiResponse::Error {
-                    status: "error".to_string(),
-                    message: format!("Parent {} does not exist", parent),
-                }),
-            ));
-        }
-    }
+    let tx_hash = tx_logic::hash_to_hex(&hash);
+    tx_logic::validate_against_state(&state_machine.dag, &tx_hash, &payload.tx.prnts)
+        .map_err(prepare_error_response)?;
 
     Ok(tx_hash)
 }
@@ -493,13 +421,6 @@ pub async fn load_genesis(
             }),
         )
     }
-}
-
-#[derive(Deserialize, Serialize)]
-struct TxRead {
-    tx: Tx,
-    sign: String,
-    func: String,
 }
 
 #[derive(Serialize)]

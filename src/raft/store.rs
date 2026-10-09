@@ -52,7 +52,7 @@ fn validate_add(dag: &Dag, hash: &str, tx: &crate::Tx, func: &str) -> Result<(),
     validate_func(func)?;
 
     // Структура `var` обязательна для известных функций.
-    if func == "transferToken" {
+    if func == crate::graph::dag::TRANSFER_TOKEN {
         extract_from_var_struct(tx)?.validate()?;
     }
 

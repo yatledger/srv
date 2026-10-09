@@ -10,7 +10,7 @@ use crate::Tx;
 ///
 /// `func` участвует в подписываемом/хэшируемом контенте, поэтому список известных
 /// значений должен быть одинаковым на всех репликах (детерминизм state machine).
-pub const KNOWN_FUNCS: &[&str] = &["transferToken"];
+pub const KNOWN_FUNCS: &[&str] = &[crate::graph::dag::TRANSFER_TOKEN];
 
 /// Проверяет, что `func` входит в список известных функций.
 pub fn validate_func(func: &str) -> Result<(), String> {

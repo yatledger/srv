@@ -39,6 +39,10 @@ pub struct Dag {
     added_seq: u64,
 }
 
+/// Имя функции-перевода. Вынесено в константу, чтобы бизнес-правило `var`
+/// не было захардкожено в нескольких местах (V6).
+pub const TRANSFER_TOKEN: &str = "transferToken";
+
 /// Верхняя граница размера реестра `added`. При превышении вытесняются самые
 /// старые записи, чтобы память не росла бесконечно. Ограничение детерминировано.
 pub const MAX_ADDED_ENTRIES: usize = 100_000;
@@ -90,7 +94,7 @@ impl Dag {
         sign: String,
         func: String,
     ) -> Result<(), String> {
-        let (ca, to, val, msg) = if func == "transferToken" {
+        let (ca, to, val, msg) = if func == TRANSFER_TOKEN {
             // Ошибка извлечения `var` не должна ронять узел — возвращаем её как Result.
             let TxVar { ca, to, val, msg } = extract_from_var_struct(&tx)?;
             (Some(ca), Some(to), Some(val), Some(msg))

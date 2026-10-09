@@ -14,6 +14,7 @@ mod graph;
 pub mod processor;
 mod raft;
 pub mod server;
+pub mod tx_logic;
 pub mod utils;
 pub mod web;
 
