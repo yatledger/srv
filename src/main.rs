@@ -1,4 +1,3 @@
-use std::sync::Arc;
 use tracing::info;
 use tracing_subscriber::fmt::time::ChronoLocal;
 
@@ -6,7 +5,6 @@ use dagdb::config::AppConfig;
 use dagdb::processor;
 use dagdb::server;
 use dagdb::start_raft;
-use dagdb::web::Router;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -20,28 +18,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     info!("Starting the Dag server");
 
     let cfg = AppConfig::load();
-    let internal_api_token = cfg.internal_api_token()?;
     let (_raft, app) = start_raft(&cfg).await?;
 
-    let router = Router::new(
-        cfg.http_timeout(),
-        cfg.http_connect_timeout(),
-        internal_api_token,
-    );
-
-    let processor_sm = Arc::clone(&app.state_machine);
-    let processor_raft = app.raft.clone();
-    let processor_node_id = cfg.id;
-    let processor_router = router.clone();
+    let processor_app = app.clone();
 
     tokio::spawn(async move {
-        processor::start_processor(
-            processor_sm,
-            processor_raft,
-            processor_node_id,
-            processor_router,
-        )
-        .await;
+        processor::start_processor(processor_app).await;
     });
 
     // Запускаем сервер

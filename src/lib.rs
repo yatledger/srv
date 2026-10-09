@@ -8,6 +8,7 @@ use redis::aio::ConnectionManager;
 
 pub mod app;
 pub mod auth;
+pub mod cleanup;
 pub mod config;
 mod graph;
 pub mod processor;
@@ -109,6 +110,9 @@ pub async fn start_raft(cfg: &AppConfig) -> Result<(typ::Raft, App), Box<dyn std
         router,
         redis,
         internal_api_token,
+        cfg.processor_interval(),
+        cfg.weight_threshold,
+        cfg.cleanup_batch_size,
     );
 
     Ok((raft, app))

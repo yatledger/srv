@@ -1,4 +1,5 @@
 use std::sync::Arc;
+use std::time::Duration;
 
 use redis::aio::ConnectionManager;
 
@@ -17,9 +18,16 @@ pub struct App {
     pub redis: ConnectionManager,
     /// Кластерный токен для внутренних эндпоинтов.
     pub internal_api_token: Arc<str>,
+    /// Интервал фоновой очистки «тяжёлых» узлов.
+    pub processor_interval: Duration,
+    /// Порог веса, выше которого узел считается «тяжёлым».
+    pub weight_threshold: f64,
+    /// Максимальный размер батча очистки за цикл.
+    pub cleanup_batch_size: usize,
 }
 
 impl App {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         id: NodeId,
         addr: String,
@@ -28,6 +36,9 @@ impl App {
         router: Router,
         redis: ConnectionManager,
         internal_api_token: Arc<str>,
+        processor_interval: Duration,
+        weight_threshold: f64,
+        cleanup_batch_size: usize,
     ) -> Self {
         Self {
             id,
@@ -37,6 +48,9 @@ impl App {
             router,
             redis,
             internal_api_token,
+            processor_interval,
+            weight_threshold,
+            cleanup_batch_size,
         }
     }
 }

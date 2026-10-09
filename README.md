@@ -92,6 +92,9 @@ cp .env.example .env
 | `HTTP_CONNECT_TIMEOUT_SECS` | — | `3` | Таймаут установки HTTP-соединения |
 | `RAFT_HTTP_TIMEOUT_SECS` | — | `30` | Таймаут Raft HTTP-запросов |
 | `RAFT_CONNECT_TIMEOUT_SECS` | — | `10` | Таймаут установки Raft HTTP-соединения |
+| `PROCESSOR_INTERVAL_MS` | — | `250` | Интервал фоновой очистки «тяжёлых» узлов |
+| `WEIGHT_THRESHOLD` | — | `0.5` | Порог веса (после насыщения) для удаления узла |
+| `CLEANUP_BATCH_SIZE` | — | `100` | Размер батча кандидатов на очистку за цикл |
 
 В `DATA_DIR` создаются `raft-log.redb` (Raft-лог, vote, committed) и
 `state-machine.redb` (DAG, `added`, membership, снапшот).

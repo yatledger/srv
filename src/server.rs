@@ -12,8 +12,6 @@ use std::sync::Arc;
 use tokio::net::TcpListener;
 use tracing::{debug, error, info};
 
-use redis::pipe;
-
 use crate::Tx;
 use crate::app::App;
 use crate::raft;
@@ -344,104 +342,21 @@ async fn remove_heavy_nodes_handler(
         );
     }
 
-    // Клонируем Redis соединение
-    let mut redis = app.redis.clone();
-    // Формируем список узлов для удаления, исключая те, что уже есть в added
-    let mut nodes_to_remove: Vec<Arc<str>> = Vec::new();
-    {
-        // Блокируем state_machine для проверки поля added
-        let state_machine = app.state_machine.state_machine.read().await;
-        for node in payload.nodes.iter() {
-            // Проверяем, отсутствует ли узел в added
-            if !state_machine.dag.is_node_added(node) {
-                nodes_to_remove.push(node.clone());
-                debug!("Node {} not in added, marked for removal.", node);
-            } else {
-                debug!("Node {} already in added, skipping.", node);
-            }
-        }
-    } // MutexGuard освобождается здесь
-
-    // TODO подумать как правиль ошибку форматировать. Если нет узлов для удаления, возвращаем успех
-    if nodes_to_remove.is_empty() {
-        return (
+    match crate::cleanup::archive_and_remove(&app, payload.nodes).await {
+        Ok(removed) => (
             StatusCode::OK,
-            Json(ApiResponse::Error {
+            Json(ApiResponse::Success(StandardResponse {
                 status: "success".to_string(),
-                message: "No new nodes to remove.".to_string(),
-            }),
-        );
-    }
-
-    // Создаем пайплайн для записи в Redis
-    let mut redis_pipe = pipe();
-    {
-        // Блокируем state_machine для получения данных узлов
-        let state_machine = app.state_machine.state_machine.read().await;
-        for node in &nodes_to_remove {
-            // Получаем данные узла из Dag
-            if let Some(node_data) = state_machine.dag.get_node_data(node) {
-                // Сериализуем данные узла в JSON
-                let node_data_json = match serde_json::to_string(&node_data) {
-                    Ok(json) => json,
-                    Err(e) => {
-                        error!("Failed to serialize node {} data: {}", node, e);
-                        continue; // Пропускаем узел при ошибке сериализации
-                    }
-                };
-
-                // Формируем ключ для Redis
-                let redis_key = format!("confirmed:{}", node.as_ref());
-                // Добавляем команду в пайплайн для записи узла и его данных
-                redis_pipe.set(redis_key, node_data_json).ignore();
-                debug!("Node {} added to Redis pipeline with its data.", node);
-            } else {
-                debug!("No data found for node {}, skipping Redis write.", node);
-            }
-        }
-    } // MutexGuard освобождается здесь
-
-    info!("{} / {}", payload.nodes.len(), nodes_to_remove.len());
-
-    // Выполняем пакетную запись в Redis
-    let redis_result: redis::RedisResult<()> = redis_pipe.query_async(&mut redis).await;
-    match redis_result {
-        Ok(_) => {
-            // Формируем запрос для Raft
-            let request = Request::Remove {
-                nodes: nodes_to_remove,
-            };
-            // Отправляем команду на удаление в Raft
-            match app.raft.client_write(request).await {
-                Ok(_response) => (
-                    StatusCode::OK,
-                    Json(ApiResponse::Success(StandardResponse {
-                        status: "success".to_string(),
-                        message: None,
-                    })),
-                ),
-                Err(e) => {
-                    error!("Failed to write RemoveNodes to Raft: {}", e);
-                    (
-                        StatusCode::INTERNAL_SERVER_ERROR,
-                        Json(ApiResponse::Error {
-                            status: "error".to_string(),
-                            message: format!("Raft error: {}", e),
-                        }),
-                    )
-                }
-            }
-        }
+                message: Some(format!("Removed {removed} node(s)")),
+            })),
+        ),
         Err(e) => {
-            error!(
-                "Failed to write batch to Redis: {}. Nodes will not be removed.",
-                e
-            );
+            error!("Failed to remove heavy nodes: {}", e);
             (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 Json(ApiResponse::Error {
                     status: "error".to_string(),
-                    message: format!("Redis error: {}", e),
+                    message: e,
                 }),
             )
         }

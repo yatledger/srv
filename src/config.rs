@@ -68,6 +68,18 @@ pub struct AppConfig {
     /// Таймаут установки Raft HTTP-соединения, секунды.
     #[arg(long, env = "RAFT_CONNECT_TIMEOUT_SECS", default_value_t = 10)]
     pub raft_connect_timeout_secs: u64,
+
+    /// Интервал фоновой очистки «тяжёлых» узлов, миллисекунды.
+    #[arg(long, env = "PROCESSOR_INTERVAL_MS", default_value_t = 250)]
+    pub processor_interval_ms: u64,
+
+    /// Порог веса (после насыщения, диапазон [0,1)), выше которого узел удаляется.
+    #[arg(long, env = "WEIGHT_THRESHOLD", default_value_t = 0.5)]
+    pub weight_threshold: f64,
+
+    /// Максимальный размер батча кандидатов на очистку за цикл.
+    #[arg(long, env = "CLEANUP_BATCH_SIZE", default_value_t = 100)]
+    pub cleanup_batch_size: usize,
 }
 
 /// Ошибка загрузки/валидации конфигурации.
@@ -146,6 +158,11 @@ impl AppConfig {
     pub fn raft_connect_timeout(&self) -> Duration {
         Duration::from_secs(self.raft_connect_timeout_secs)
     }
+
+    /// Интервал фоновой очистки.
+    pub fn processor_interval(&self) -> Duration {
+        Duration::from_millis(self.processor_interval_ms)
+    }
 }
 
 #[cfg(test)]
@@ -167,6 +184,9 @@ mod tests {
             http_connect_timeout_secs: 3,
             raft_http_timeout_secs: 30,
             raft_connect_timeout_secs: 10,
+            processor_interval_ms: 250,
+            weight_threshold: 5.0,
+            cleanup_batch_size: 100,
         }
     }
 

@@ -278,11 +278,12 @@ impl Dag {
         // Вызываем существующую функцию для вычисления потомков с весами
         let descendants_map =
             compute_descendants_with_depth_and_weight(&self.nodes, &nodes_to_process);
-        // Агрегируем веса потомков для каждого узла
+        // Агрегируем веса потомков и насыщаем результат в [0, 1), чтобы вес не
+        // рос неограниченно с числом потомков (находка C23).
         let mut weights = HashMap::new();
         for (node, descendants) in descendants_map {
             let total_weight: f64 = descendants.iter().map(|d| d.weight).sum();
-            weights.insert(node, total_weight);
+            weights.insert(node, crate::graph::weights::saturate_weight(total_weight));
         }
         weights
     }

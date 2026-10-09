@@ -19,9 +19,21 @@ pub struct NodeDepth {
     pub depth: usize,
 }
 
-/// Вычисляет вес узла по простой формуле: 1/depth
+/// Вычисляет вклад одного потомка по простой формуле: 1/depth
 fn calculate_weight(depth: usize) -> f64 {
     1.0 / depth as f64
+}
+
+/// Преобразует сырую сумму весов потомков в ограниченное значение `[0, 1)`.
+///
+/// Раньше вес узла был суммой вкладов `1/depth` и неограниченно рос с числом
+/// потомков (находка C23). Насыщающая функция `x / (1 + x)` монотонна, но
+/// ограничена сверху единицей, что делает порог предсказуемым.
+pub fn saturate_weight(raw: f64) -> f64 {
+    if !raw.is_finite() || raw <= 0.0 {
+        return 0.0;
+    }
+    raw / (1.0 + raw)
 }
 
 // Вычисляет итоговый вес каждого узла на основе суммы весов всех его потомков
@@ -168,4 +180,26 @@ pub fn get_nodes_by_depth(nodes_map: &HashMap<Arc<str>, Node>) -> Vec<NodeDepth>
     result.sort_by(|a, b| a.depth.cmp(&b.depth).then_with(|| a.node.cmp(&b.node)));
 
     result
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn saturate_weight_is_bounded_and_monotonic() {
+        assert_eq!(saturate_weight(0.0), 0.0);
+        assert_eq!(saturate_weight(-1.0), 0.0);
+        assert_eq!(saturate_weight(f64::NAN), 0.0);
+        assert_eq!(saturate_weight(f64::INFINITY), 0.0);
+
+        // Монотонно и всегда < 1.
+        let a = saturate_weight(1.0);
+        let b = saturate_weight(10.0);
+        let c = saturate_weight(1_000_000.0);
+        assert!(a < b && b < c);
+        assert!(c < 1.0);
+        // Экстремально большие входы ограничены сверху единицей.
+        assert!(saturate_weight(f64::MAX) <= 1.0);
+    }
 }
