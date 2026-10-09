@@ -7,6 +7,7 @@ use std::sync::Arc;
 use redis::aio::ConnectionManager;
 
 pub mod app;
+pub mod auth;
 pub mod config;
 mod graph;
 pub mod processor;
@@ -81,7 +82,12 @@ pub async fn start_raft(cfg: &AppConfig) -> Result<(typ::Raft, App), Box<dyn std
     )
     .await?;
 
-    let router = web::Router::new(cfg.http_timeout(), cfg.http_connect_timeout());
+    let internal_api_token: Arc<str> = Arc::from(cfg.internal_api_token()?);
+    let router = web::Router::new(
+        cfg.http_timeout(),
+        cfg.http_connect_timeout(),
+        internal_api_token.to_string(),
+    );
 
     // Настраиваем подключение к Redis: строка подключения приходит только из окружения.
     let redis_url = cfg.redis_url()?;
@@ -95,6 +101,7 @@ pub async fn start_raft(cfg: &AppConfig) -> Result<(typ::Raft, App), Box<dyn std
         state_machine_store,
         router,
         redis,
+        internal_api_token,
     );
 
     Ok((raft, app))

@@ -40,16 +40,21 @@ impl From<serde_json::Error> for ApiRouterError {
 #[derive(Debug, Clone)]
 pub struct Router {
     client: Client,
+    /// Кластерный токен, добавляемый к внутренним запросам.
+    internal_token: String,
 }
 
 impl Router {
-    pub fn new(timeout: Duration, connect_timeout: Duration) -> Self {
+    pub fn new(timeout: Duration, connect_timeout: Duration, internal_token: String) -> Self {
         let client = Client::builder()
             .timeout(timeout)
             .connect_timeout(connect_timeout)
             .build()
             .expect("Failed to create HTTP client for ApiRouter");
-        Self { client }
+        Self {
+            client,
+            internal_token,
+        }
     }
 
     /// Отправляет запрос для внутреннего API приложения.
@@ -75,7 +80,13 @@ impl Router {
             serde_json::to_string(&req).unwrap()
         );
 
-        let response = self.client.post(&url).json(&req).send().await?;
+        let response = self
+            .client
+            .post(&url)
+            .header(crate::auth::INTERNAL_TOKEN_HEADER, &self.internal_token)
+            .json(&req)
+            .send()
+            .await?;
 
         let status = response.status();
         let body_text = response.text().await.map_err(ApiRouterError::Network)?;
@@ -104,6 +115,10 @@ impl Router {
 
 impl Default for Router {
     fn default() -> Self {
-        Self::new(Duration::from_secs(10), Duration::from_secs(3))
+        Self::new(
+            Duration::from_secs(10),
+            Duration::from_secs(3),
+            String::new(),
+        )
     }
 }

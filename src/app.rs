@@ -15,6 +15,8 @@ pub struct App {
     pub state_machine: Arc<StateMachineStore>,
     pub router: Router,
     pub redis: ConnectionManager,
+    /// Кластерный токен для внутренних эндпоинтов.
+    pub internal_api_token: Arc<str>,
 }
 
 impl App {
@@ -25,6 +27,7 @@ impl App {
         state_machine: Arc<StateMachineStore>,
         router: Router,
         redis: ConnectionManager,
+        internal_api_token: Arc<str>,
     ) -> Self {
         Self {
             id,
@@ -33,6 +36,7 @@ impl App {
             state_machine,
             router,
             redis,
+            internal_api_token,
         }
     }
 }

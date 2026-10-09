@@ -283,6 +283,30 @@ async fn add_handler(
     State(app): State<App>,
     Json(payload): Json<InternalAddRequest>,
 ) -> (StatusCode, Json<ApiResponse<StandardResponse>>) {
+    // Внутренний эндпоинт обязан проходить те же проверки, что и публичный `/`:
+    // подпись, покрытие func/var, существование и уникальность родителей.
+    let tx_read = TxRead {
+        tx: payload.tx.clone(),
+        sign: payload.sign.clone(),
+        func: payload.func.clone(),
+    };
+
+    let computed_hash = match validate_and_prepare_tx(&app, &tx_read).await {
+        Ok(hash) => hash,
+        Err(response) => return response,
+    };
+
+    // Хэш, переданный внутренним вызывающим, обязан совпадать с вычисленным.
+    if computed_hash != payload.hash {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(ApiResponse::Error {
+                status: "error".to_string(),
+                message: "Hash does not match transaction content".to_string(),
+            }),
+        );
+    }
+
     let request = Request::Add {
         hash: payload.hash,
         tx: payload.tx,
@@ -631,12 +655,16 @@ pub struct HeavyNodesRequest {
 }
 
 pub async fn start_server(app: App, bind_addr: String) -> Result<(), Box<dyn std::error::Error>> {
-    let srv = Router::new()
+    // Публичный API: доступен без аутентификации.
+    let public = Router::new()
         .route("/", post(add_tx))
+        .route("/pool", get(pool_handler))
+        .route("/full", get(get_full_graph_handler));
+
+    // Внутренний API: только с кластерным токеном.
+    let internal = Router::new()
         .route("/add", post(add_handler))
         .route("/remove_heavy_nodes", post(remove_heavy_nodes_handler))
-        .route("/pool", get(pool_handler))
-        .route("/full", get(get_full_graph_handler))
         .route("/load-genesis", post(load_genesis))
         .route("/raft/vote", post(vote))
         .route("/raft/append", post(append))
@@ -645,6 +673,13 @@ pub async fn start_server(app: App, bind_addr: String) -> Result<(), Box<dyn std
         .route("/mng/add-learner", post(add_learner))
         .route("/mng/init", post(init))
         .route("/mng/metrics", post(metrics))
+        .route_layer(axum::middleware::from_fn_with_state(
+            app.clone(),
+            crate::auth::require_internal_token,
+        ));
+
+    let srv = public
+        .merge(internal)
         .layer(DefaultBodyLimit::max(10 * 1024 * 1024))
         .with_state(app.clone());
 

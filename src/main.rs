@@ -20,9 +20,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     info!("Starting the DAG server");
 
     let cfg = AppConfig::load();
+    let internal_api_token = cfg.internal_api_token()?;
     let (_raft, app) = start_raft(&cfg).await?;
 
-    let router = Router::new(cfg.http_timeout(), cfg.http_connect_timeout());
+    let router = Router::new(
+        cfg.http_timeout(),
+        cfg.http_connect_timeout(),
+        internal_api_token,
+    );
 
     let processor_sm = Arc::clone(&app.state_machine);
     let processor_raft = app.raft.clone();
