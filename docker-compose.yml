@@ -1,13 +1,19 @@
-# Локальный кластер dagdb из 4 узлов + Redis.
-# Запуск: docker compose up --build
+# Локальный кластер dagdb из 4 узлов + Redis (ТОЛЬКО ДЛЯ ЛОКАЛЬНОЙ РАЗРАБОТКИ).
+# Запуск: REDIS_PASSWORD=... INTERNAL_API_TOKEN=... docker compose up --build
 # Порт каждого узла: node1=21001, node2=21002, node3=21003, node4=21004.
+#
+# ВАЖНО: секретов в файле нет намеренно (D13/V12). `REDIS_PASSWORD` и
+# `INTERNAL_API_TOKEN` обязаны приходить из окружения; при их отсутствии
+# compose падает, а не подставляет значение по умолчанию. Не переносите этот
+# файл в реальный стенд как есть — токен ≥32 символов проходит prod-валидацию
+# независимо от значения (см. Profile::Prod).
 
 services:
   redis:
     image: redis:7-alpine
     ports:
       - "6379:6379"
-    command: ["redis-server", "--requirepass", "CHANGE_ME"]
+    command: ["redis-server", "--requirepass", "${REDIS_PASSWORD:?REDIS_PASSWORD must be set}"]
 
   node1:
     build: .
@@ -17,8 +23,8 @@ services:
       BIND_ADDR: "0.0.0.0:21001"
       HTTP_PORT: "21001"
       DATA_DIR: "/data"
-      REDIS_URL: "redis://:CHANGE_ME@redis:6379/0"
-      INTERNAL_API_TOKEN: "CHANGE_ME_LONG_RANDOM_TOKEN"
+      REDIS_URL: "redis://:${REDIS_PASSWORD:?REDIS_PASSWORD must be set}@redis:6379/0"
+      INTERNAL_API_TOKEN: "${INTERNAL_API_TOKEN:?INTERNAL_API_TOKEN must be set}"
       RUST_LOG: "info"
     command: ["--id", "1", "--addr", "node1", "--port", "21001"]
     volumes:
@@ -41,8 +47,8 @@ services:
       BIND_ADDR: "0.0.0.0:21002"
       HTTP_PORT: "21002"
       DATA_DIR: "/data"
-      REDIS_URL: "redis://:CHANGE_ME@redis:6379/0"
-      INTERNAL_API_TOKEN: "CHANGE_ME_LONG_RANDOM_TOKEN"
+      REDIS_URL: "redis://:${REDIS_PASSWORD:?REDIS_PASSWORD must be set}@redis:6379/0"
+      INTERNAL_API_TOKEN: "${INTERNAL_API_TOKEN:?INTERNAL_API_TOKEN must be set}"
       RUST_LOG: "info"
     command: ["--id", "2", "--addr", "node2", "--port", "21002"]
     volumes:
@@ -65,8 +71,8 @@ services:
       BIND_ADDR: "0.0.0.0:21003"
       HTTP_PORT: "21003"
       DATA_DIR: "/data"
-      REDIS_URL: "redis://:CHANGE_ME@redis:6379/0"
-      INTERNAL_API_TOKEN: "CHANGE_ME_LONG_RANDOM_TOKEN"
+      REDIS_URL: "redis://:${REDIS_PASSWORD:?REDIS_PASSWORD must be set}@redis:6379/0"
+      INTERNAL_API_TOKEN: "${INTERNAL_API_TOKEN:?INTERNAL_API_TOKEN must be set}"
       RUST_LOG: "info"
     command: ["--id", "3", "--addr", "node3", "--port", "21003"]
     volumes:
@@ -89,8 +95,8 @@ services:
       BIND_ADDR: "0.0.0.0:21004"
       HTTP_PORT: "21004"
       DATA_DIR: "/data"
-      REDIS_URL: "redis://:CHANGE_ME@redis:6379/0"
-      INTERNAL_API_TOKEN: "CHANGE_ME_LONG_RANDOM_TOKEN"
+      REDIS_URL: "redis://:${REDIS_PASSWORD:?REDIS_PASSWORD must be set}@redis:6379/0"
+      INTERNAL_API_TOKEN: "${INTERNAL_API_TOKEN:?INTERNAL_API_TOKEN must be set}"
       RUST_LOG: "info"
     command: ["--id", "4", "--addr", "node4", "--port", "21004"]
     volumes:
@@ -114,7 +120,7 @@ services:
       - node3
       - node4
     environment:
-      INTERNAL_API_TOKEN: "CHANGE_ME_LONG_RANDOM_TOKEN"
+      INTERNAL_API_TOKEN: "${INTERNAL_API_TOKEN:?INTERNAL_API_TOKEN must be set}"
     entrypoint: ["/bin/sh", "-c"]
     command:
       - |

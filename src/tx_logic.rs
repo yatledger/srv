@@ -84,7 +84,9 @@ pub fn validate_structure(payload: &TxRead) -> Result<(Blake3Hash, Func), Prepar
 }
 
 /// Проверяет, что узел ещё не существует и все родители присутствуют
-/// (в DAG или в реестре `added`).
+/// **в живом DAG**. Родитель, оставшийся только в реестре `added` (удалённый),
+/// отклоняется — та же семантика, что в детерминированной валидации state
+/// machine (V15/C38).
 ///
 /// Это **ранний отказ** по текущему снимку реплики; истина — детерминированная
 /// валидация в state machine при применении (см. V4).
@@ -97,7 +99,12 @@ pub fn validate_against_state(
         return Err(PrepareError::Conflict("Node already exists".to_string()));
     }
     for parent in parents {
-        if !dag.contains_node(parent) && !dag.is_node_added(parent) {
+        if !dag.contains_node(parent) {
+            if dag.is_node_added(parent) {
+                return Err(PrepareError::Conflict(format!(
+                    "Parent {parent} was removed and cannot be referenced"
+                )));
+            }
             return Err(PrepareError::Conflict(format!(
                 "Parent {parent} does not exist"
             )));

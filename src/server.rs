@@ -607,6 +607,20 @@ struct GenesisTransaction {
 pub async fn load_genesis(
     State(app): State<App>,
 ) -> (StatusCode, Json<ApiResponse<StandardResponse>>) {
+    // V16/S16: `genesis`-узлы не подписаны, поэтому путь `POST /add` (с проверкой
+    // подписи) для них неприменим. Зато запись обязана идти через лидера: на
+    // follower `client_write` вернёт `ForwardToLeader`, и часть генезиса молча
+    // потеряется. Требуем лидера явно, а не полагаемся на удачу.
+    if app.raft.metrics().borrow().current_leader != Some(app.id) {
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(ApiResponse::Error {
+                status: "error".to_string(),
+                message: "load-genesis must be sent to the current leader".to_string(),
+            }),
+        );
+    }
+
     // Загрузка генезис-транзакций
     // Читаем genesis.json
     let genesis_content = match fs::read_to_string("genesis.json") {

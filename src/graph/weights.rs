@@ -2,7 +2,7 @@ use crate::graph::dag::Node;
 use num_cpus;
 use rayon::prelude::*; // Для параллельной обработки
 use serde::Serialize;
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::sync::{Arc, Mutex, OnceLock};
 
 use crate::domain::Hash;
@@ -69,7 +69,7 @@ pub fn saturate_weight(raw: f64) -> f64 {
 /// (Memoization). Это убирает повторный обход общих подграфов (находка C30).
 /// Разные узлы обрабатываются параллельно в глобальном rayon-пуле.
 pub fn compute_descendants_with_depth_and_weight(
-    nodes_map: &HashMap<Hash, Node>,
+    nodes_map: &BTreeMap<Hash, Node>,
     nodes_to_process: &HashSet<Hash>,
 ) -> HashMap<Hash, Vec<NodeInfo>> {
     // Единый мемоизирующий кэш на вызов, разделяемый между потоками.
@@ -88,7 +88,7 @@ pub fn compute_descendants_with_depth_and_weight(
 
 /// Находит потомков узла, переиспользуя мемоизированные результаты.
 fn find_descendants_cached(
-    nodes_map: &HashMap<Hash, Node>,
+    nodes_map: &BTreeMap<Hash, Node>,
     start_node: &Hash,
     memo: &Mutex<HashMap<Hash, Arc<Vec<NodeInfo>>>>,
 ) -> Arc<Vec<NodeInfo>> {
@@ -159,7 +159,7 @@ fn find_descendants_cached(
 /// Вычисляет глубину каждого узла в Dag относительно корневых узлов
 /// Глубина корневых узлов (без родителей) = 0
 /// Глубина остальных узлов = максимальная глубина родителей + 1
-pub fn compute_node_depths(nodes_map: &HashMap<Hash, Node>) -> HashMap<Hash, usize> {
+pub fn compute_node_depths(nodes_map: &BTreeMap<Hash, Node>) -> HashMap<Hash, usize> {
     let mut depths: HashMap<Hash, usize> = HashMap::new();
     let mut in_degree: HashMap<Hash, usize> = HashMap::new();
     let mut queue: VecDeque<Hash> = VecDeque::new();
@@ -207,7 +207,7 @@ pub fn compute_node_depths(nodes_map: &HashMap<Hash, Node>) -> HashMap<Hash, usi
 }
 
 /// Возвращает список всех узлов с их глубинами, отсортированный по глубине
-pub fn get_nodes_by_depth(nodes_map: &HashMap<Hash, Node>) -> Vec<NodeDepth> {
+pub fn get_nodes_by_depth(nodes_map: &BTreeMap<Hash, Node>) -> Vec<NodeDepth> {
     let depths = compute_node_depths(nodes_map);
 
     let mut result: Vec<NodeDepth> = depths
@@ -247,13 +247,12 @@ mod tests {
             parents: Default::default(),
             children: children.iter().map(|c| Hash::from(*c)).collect(),
             data: serde_json::json!({}),
-            time: 0,
         }
     }
 
     /// Алмаз: root -> a, root -> b, a -> shared, b -> shared, shared -> leaf.
-    fn diamond() -> HashMap<Hash, Node> {
-        let mut map = HashMap::new();
+    fn diamond() -> BTreeMap<Hash, Node> {
+        let mut map = BTreeMap::new();
         map.insert(Hash::from("root"), node(&["a", "b"]));
         map.insert(Hash::from("a"), node(&["shared"]));
         map.insert(Hash::from("b"), node(&["shared"]));

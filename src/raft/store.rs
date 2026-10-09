@@ -22,7 +22,8 @@ use crate::graph::dag::{Dag, extract_from_var_struct};
 ///
 /// Проверки не зависят от сети/времени и дают одинаковый результат на всех
 /// репликах при одинаковом состоянии: уникальность узла, существование и
-/// уникальность родителей, допустимость `func` и структуры `var`.
+/// уникальность родителей в живом DAG, монотонность `seq` по адресу (V18),
+/// допустимость `func` и структуры `var`.
 ///
 /// Ограничение на количество родителей (2..100) намеренно не проверяется здесь:
 /// это политика входного API, а генезис-узлы легитимно имеют пустой список
@@ -33,7 +34,9 @@ fn validate_add(dag: &Dag, hash: &Hash, tx: &crate::Tx, func: &Func) -> Result<(
         return Err("node already exists".to_string());
     }
 
-    // Родители: уникальны, непусты и существуют (в Dag или в реестре added).
+    // Родители: уникальны, непусты и существуют **в живом DAG**. Родитель,
+    // оставшийся только в реестре `added` (удалённый), не допускается — иначе
+    // связь молча терялась бы, а `Node.parents` был бы неполным (V15/C38).
     let mut seen = std::collections::HashSet::new();
     for parent in &tx.prnts {
         if parent.trim().is_empty() {
@@ -42,10 +45,19 @@ fn validate_add(dag: &Dag, hash: &Hash, tx: &crate::Tx, func: &Func) -> Result<(
         if !seen.insert(parent.clone()) {
             return Err("parents must be unique".to_string());
         }
-        if !dag.contains_node(parent) && !dag.is_node_added(parent) {
+        if !dag.contains_node(parent) {
+            if dag.is_node_added(parent) {
+                return Err(format!(
+                    "parent {parent} was removed and cannot be referenced"
+                ));
+            }
             return Err(format!("parent {parent} does not exist"));
         }
     }
+
+    // V18: `seq` адреса обязан строго возрастать — защита от replay/stale-подписи
+    // после вытеснения старого узла из реестра `added`.
+    dag.accepts_seq(&tx.addr, tx.seq)?;
 
     // Структура `var` обязательна для известных функций.
     if *func == Func::TransferToken {
@@ -103,7 +115,10 @@ pub struct StateMachineData {
 
 /// Текущая версия схемы состояния. Увеличивается при несовместимом изменении
 /// формата; старые снапшоты прогоняются через [`StateMachineData::migrate`].
-pub const SCHEMA_VERSION: u32 = 2;
+///
+/// Версия 3 (V18): добавлена карта `Dag.last_seq` (монотонность `seq` по адресу);
+/// отсутствие поля в старых снапшотах читается как пустая карта.
+pub const SCHEMA_VERSION: u32 = 3;
 
 impl Default for StateMachineData {
     fn default() -> Self {
@@ -443,6 +458,16 @@ mod tests {
         }
     }
 
+    /// Транзакция с заданным `seq` (для проверок монотонности V18).
+    fn tx_seq(parents: &[&str], seq: u32) -> Tx {
+        Tx {
+            prnts: parents.iter().map(|p| Hash::from(*p)).collect(),
+            addr: crate::domain::Address::from("addr"),
+            seq,
+            var: json!({ "ca": "a", "to": "b", "val": 1, "msg": "m" }),
+        }
+    }
+
     fn valid_tx_var() -> Tx {
         tx(&[])
     }
@@ -519,7 +544,7 @@ mod tests {
         let err = validate_add(
             &dag,
             &Hash::from("n3"),
-            &tx(&["pa", "pa"]),
+            &tx_seq(&["pa", "pa"], 2),
             &Func::TransferToken,
         )
         .unwrap_err();
@@ -550,11 +575,71 @@ mod tests {
             validate_add(
                 &dag,
                 &Hash::from("child"),
-                &tx(&["root"]),
+                &tx_seq(&["root"], 1),
                 &Func::TransferToken
             )
             .is_ok()
         );
+    }
+
+    #[test]
+    fn add_rejects_parent_that_was_removed() {
+        // V15/C38: родитель в реестре `added` (удалённый узел) не допускается.
+        let mut dag = Dag::new();
+        let parent = Hash::from("root");
+        dag.add_node_with_parents(
+            parent.clone(),
+            valid_tx_var(),
+            String::new(),
+            Func::TransferToken,
+        )
+        .unwrap();
+        dag.remove_node(parent.clone());
+        assert!(dag.is_node_added(&parent));
+
+        let err = validate_add(
+            &dag,
+            &Hash::from("child"),
+            &tx(&["root"]),
+            &Func::TransferToken,
+        )
+        .unwrap_err();
+        assert!(err.contains("removed"), "получено: {err}");
+    }
+
+    #[test]
+    fn add_rejects_non_monotonic_seq_for_same_addr() {
+        // V18: seq обязан строго возрастать для одного адреса.
+        let mut dag = Dag::new();
+        dag.add_node_with_parents(
+            Hash::from("n0"),
+            tx_seq(&[], 0),
+            String::new(),
+            Func::TransferToken,
+        )
+        .unwrap();
+        assert!(
+            dag.accepts_seq(&crate::domain::Address::from("addr"), 1)
+                .is_ok()
+        );
+        // Повтор/откат номера отклоняется.
+        let err = validate_add(
+            &dag,
+            &Hash::from("n1"),
+            &tx_seq(&[], 0),
+            &Func::TransferToken,
+        )
+        .unwrap_err();
+        assert!(err.contains("non-monotonic"), "получено: {err}");
+    }
+
+    #[test]
+    fn genesis_empty_addr_is_exempt_from_seq_check() {
+        // V18: bootstrap-генезис с пустым addr не участвует в проверке монотонности.
+        let dag = Dag::new();
+        let mut genesis = valid_tx_var();
+        genesis.addr = crate::domain::Address::from("");
+        assert!(validate_add(&dag, &Hash::from("g1"), &genesis, &Func::TransferToken).is_ok());
     }
 
     #[test]

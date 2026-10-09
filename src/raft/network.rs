@@ -52,24 +52,27 @@ impl RaftNetworkV2<TypeConfig> for Connection {
         Ok(resp)
     }
 
-    /// A real application should replace this method with customized implementation.
+    /// Полная передача снапшота. Учитывает токен отмены `cancel`: если вызывающая
+    /// сторона отменила репликацию, длинная передача прерывается и возвращается
+    /// `StreamingError::Closed` (V17/C40), как ожидает openraft.
     async fn full_snapshot(
         &mut self,
         vote: Vote,
         snapshot: Snapshot,
-        _cancel: impl Future<Output = ReplicationClosed> + OptionalSend + 'static,
+        cancel: impl Future<Output = ReplicationClosed> + OptionalSend + 'static,
         _option: RPCOption,
     ) -> Result<SnapshotResponse, StreamingError> {
-        let resp = self
-            .router
-            .send(
-                self.target,
-                self.addr.clone(),
-                "/raft/snapshot",
-                (vote, snapshot.meta, snapshot.snapshot),
-            )
-            .await?;
-        Ok(resp)
+        let send = self.router.send(
+            self.target,
+            self.addr.clone(),
+            "/raft/snapshot",
+            (vote, snapshot.meta, snapshot.snapshot),
+        );
+
+        tokio::select! {
+            resp = send => Ok(resp?),
+            closed = cancel => Err(StreamingError::Closed(closed)),
+        }
     }
 
     async fn vote(

@@ -10,6 +10,10 @@ RUN apt-get update \
 COPY Cargo.toml Cargo.lock ./
 COPY src ./src
 COPY tests ./tests
+# V11: `Cargo.toml` объявляет [[bench]], а `src/server.rs` делает
+# include_str! docs/api/openapi.json — без этих каталогов сборка падает.
+COPY benches ./benches
+COPY docs ./docs
 RUN cargo build --release
 
 FROM debian:bookworm-slim AS runtime

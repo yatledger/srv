@@ -4,7 +4,7 @@
 //! throughput записи узлов. Запуск: `cargo bench`. В CI проверяется только
 //! компиляция бенчмарков, чтобы не удлинять пайплайн.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashSet};
 
 use criterion::{Criterion, criterion_group, criterion_main};
 
@@ -43,7 +43,7 @@ fn tx(parents: Vec<Hash>) -> Tx {
 fn bench_descendants(c: &mut Criterion) {
     let dag = chain(500);
     let roots: HashSet<Hash> = dag.get_nodes().keys().cloned().collect();
-    let nodes_map: HashMap<Hash, _> = dag.get_nodes().clone();
+    let nodes_map: BTreeMap<Hash, _> = dag.get_nodes().clone();
 
     c.bench_function("compute_descendants_with_depth_and_weight/500", |b| {
         b.iter(|| weights::compute_descendants_with_depth_and_weight(&nodes_map, &roots));

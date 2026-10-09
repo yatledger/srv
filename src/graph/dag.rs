@@ -1,6 +1,8 @@
 // Импортируем необходимые коллекции из стандартной библиотеки Rust для работы с графом.
-// HashMap используется для хранения списка смежности, а HashSet — для проверки циклов в DFS.
-use std::collections::{HashMap, HashSet};
+// BTreeMap/BTreeSet дают детерминированный (отсортированный) порядок обхода и
+// сериализации, поэтому одинаковое состояние даёт одинаковые байты снапшота на
+// всех репликах (находка C36/V14).
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
 use crate::Adjacency;
 use crate::Tx;
@@ -17,27 +19,24 @@ use crate::domain::{Address, Func, Hash};
 
 #[derive(Debug, Clone, Default)]
 pub struct Node {
-    pub parents: HashSet<Hash>,
-    pub children: HashSet<Hash>,
+    pub parents: BTreeSet<Hash>,
+    pub children: BTreeSet<Hash>,
     pub data: Value,
-    pub time: u64,
-}
-
-#[derive(Debug, Clone)]
-pub struct NodeTime {
-    pub node: Hash,
-    pub time: u64,
 }
 
 #[derive(Debug, Clone)]
 pub struct Dag {
-    nodes: HashMap<Hash, Node>,
+    nodes: BTreeMap<Hash, Node>,
     /// Реестр удалённых узлов: хэш -> логический номер удаления.
     /// Номер детерминирован (порядок удалений), а не привязан к системным часам,
     /// чтобы состояние совпадало на всех репликах.
-    added: HashMap<Hash, u64>,
+    added: BTreeMap<Hash, u64>,
     /// Счётчик логических номеров удаления (монотонно растёт).
     added_seq: u64,
+    /// Последний применённый `seq` по адресу отправителя (V18: анти-replay).
+    /// Детерминированная защита: после вытеснения старого узла из `added`
+    /// повторная транзакция с прежним `seq` больше не проходит проверку.
+    last_seq: BTreeMap<Address, u32>,
 }
 
 /// Имя функции-перевода. Вынесено в константу, чтобы бизнес-правило `var`
@@ -82,9 +81,10 @@ pub fn extract_from_var_struct(tx: &Tx) -> Result<TxVar, String> {
 impl Dag {
     pub fn new() -> Self {
         Dag {
-            nodes: HashMap::new(),
-            added: HashMap::new(),
+            nodes: BTreeMap::new(),
+            added: BTreeMap::new(),
             added_seq: 0,
+            last_seq: BTreeMap::new(),
         }
     }
 
@@ -103,7 +103,10 @@ impl Dag {
             (None, None, None, None)
         };
 
-        let existing_parents: HashSet<Hash> = tx
+        // V15/C38: родители берём только из живого DAG. Родители из реестра
+        // `added` (удалённые узлы) не допускаются — см. `validate_add`, который
+        // отклоняет такие команды; здесь фиксируется та же семантика.
+        let existing_parents: BTreeSet<Hash> = tx
             .prnts
             .iter()
             .filter(|p| self.nodes.contains_key(p))
@@ -133,20 +136,39 @@ impl Dag {
                 "msg": msg,
             }
         });
-        let timestamp = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_micros() as u64)
-            .unwrap_or(0);
-        // Создаем и вставляем новый узел
+        // Создаем и вставляем новый узел.
         let new_node = Node {
             parents: existing_parents,
-            children: HashSet::new(),
+            children: BTreeSet::new(),
             data: data_json,
-            time: timestamp,
         };
-        self.nodes.insert(tx_hash, new_node);
+        self.nodes.insert(tx_hash.clone(), new_node);
+
+        // V18: запоминаем последний `seq` адреса (кроме bootstrap-узлов с пустым
+        // addr), чтобы отклонить повтор/откат номера.
+        if !tx.addr.as_str().trim().is_empty() {
+            self.last_seq
+                .entry(tx.addr.clone())
+                .and_modify(|s| *s = (*s).max(tx.seq))
+                .or_insert(tx.seq);
+        }
 
         Ok(())
+    }
+
+    /// Проверяет монотонность `seq` по адресу (V18, анти-replay).
+    ///
+    /// Пустой `addr` (bootstrap-генезис) проверку не проходит и не запоминается.
+    pub fn accepts_seq(&self, addr: &Address, seq: u32) -> Result<(), String> {
+        if addr.as_str().trim().is_empty() {
+            return Ok(());
+        }
+        match self.last_seq.get(addr) {
+            Some(&last) if seq <= last => Err(format!(
+                "non-monotonic seq for {addr}: got {seq}, last applied {last}"
+            )),
+            _ => Ok(()),
+        }
     }
 
     // Получение данных узла из новой структуры.
@@ -159,7 +181,7 @@ impl Dag {
     }
 
     /// Возвращает иммутабельную ссылку на таблицу узлов.
-    pub fn get_nodes(&self) -> &HashMap<Hash, Node> {
+    pub fn get_nodes(&self) -> &BTreeMap<Hash, Node> {
         &self.nodes
     }
 
@@ -182,21 +204,6 @@ impl Dag {
             .iter()
             .map(|(hash, node)| (hash.clone(), node.parents.iter().cloned().collect()))
             .collect()
-    }
-
-    pub fn get_time(&self) -> Vec<NodeTime> {
-        // Собираем узлы с их временными метками в вектор
-        let mut nodes = self
-            .nodes
-            .iter()
-            .map(|(hash, node)| NodeTime {
-                node: hash.clone(),
-                time: node.time,
-            })
-            .collect::<Vec<NodeTime>>();
-        // Сортируем узлы по времени по возрастанию
-        nodes.sort_by_key(|a| a.time);
-        nodes
     }
 
     // Возвращает `true`, если узел существует в `nodes`.
@@ -305,7 +312,8 @@ impl Serialize for Node {
     where
         S: Serializer,
     {
-        let mut map = serializer.serialize_map(Some(4))?;
+        // BTreeSet гарантирует отсортированный порядок — байты детерминированы.
+        let mut map = serializer.serialize_map(Some(3))?;
         map.serialize_entry(
             "parents",
             &self
@@ -323,7 +331,6 @@ impl Serialize for Node {
                 .collect::<Vec<&str>>(),
         )?;
         map.serialize_entry("data", &self.data)?;
-        map.serialize_entry("time", &self.time)?;
         map.end()
     }
 }
@@ -347,10 +354,9 @@ impl<'de> Deserialize<'de> for Node {
             where
                 V: MapAccess<'de>,
             {
-                let mut parents: Option<HashSet<Hash>> = None;
-                let mut children: Option<HashSet<Hash>> = None;
+                let mut parents: Option<BTreeSet<Hash>> = None;
+                let mut children: Option<BTreeSet<Hash>> = None;
                 let mut data = None;
-                let mut time = None;
 
                 while let Some(key) = map.next_key::<String>()? {
                     match key.as_str() {
@@ -363,7 +369,7 @@ impl<'de> Deserialize<'de> for Node {
                             children = Some(children_vec.into_iter().map(Hash::from).collect());
                         }
                         "data" => data = Some(map.next_value::<Value>()?),
-                        "time" => time = Some(map.next_value()?),
+                        // Устаревшее поле `time` (C37/V14) игнорируем при чтении.
                         _ => {
                             let _ = map.next_value::<serde_json::Value>()?;
                         }
@@ -374,16 +380,11 @@ impl<'de> Deserialize<'de> for Node {
                     parents: parents.unwrap_or_default(),
                     children: children.unwrap_or_default(),
                     data: data.ok_or_else(|| serde::de::Error::missing_field("data"))?,
-                    time: time.unwrap_or(0),
                 })
             }
         }
 
-        deserializer.deserialize_struct(
-            "Node",
-            &["parents", "children", "data", "time"],
-            NodeVisitor,
-        )
+        deserializer.deserialize_struct("Node", &["parents", "children", "data"], NodeVisitor)
     }
 }
 
@@ -394,14 +395,15 @@ impl Serialize for Dag {
         S: Serializer,
     {
         // В снапшот/на диск обязаны попадать и узлы, и реестр `added`, и
-        // монотонный счётчик удалений, иначе удалённые узлы «воскреснут» после
-        // рестарта, а номера продолжат расходиться (нарушение инварианта).
-        let mut map = serializer.serialize_map(Some(3))?;
-        let nodes: HashMap<&str, &Node> = self.nodes.iter().map(|(k, v)| (k.as_str(), v)).collect();
-        let added: HashMap<&str, &u64> = self.added.iter().map(|(k, v)| (k.as_str(), v)).collect();
-        map.serialize_entry("nodes", &nodes)?;
-        map.serialize_entry("added", &added)?;
+        // монотонный счётчик удалений, и карта `last_seq`, иначе удалённые узлы
+        // «воскреснут» после рестарта, а номера продолжат расходиться
+        // (нарушение инварианта). BTreeMap/BTreeSet дают стабильный порядок
+        // (C36/V14): одинаковое состояние → одинаковые байты снапшота.
+        let mut map = serializer.serialize_map(Some(4))?;
+        map.serialize_entry("nodes", &self.nodes)?;
+        map.serialize_entry("added", &self.added)?;
         map.serialize_entry("added_seq", &self.added_seq)?;
+        map.serialize_entry("last_seq", &self.last_seq)?;
         map.end()
     }
 }
@@ -426,16 +428,17 @@ impl<'de> Deserialize<'de> for Dag {
                 V: MapAccess<'de>,
             {
                 // Инициализируем поля для хранения данных
-                let mut nodes: Option<HashMap<Hash, Node>> = None;
-                let mut added: Option<HashMap<Hash, u64>> = None;
+                let mut nodes: Option<BTreeMap<Hash, Node>> = None;
+                let mut added: Option<BTreeMap<Hash, u64>> = None;
                 let mut added_seq = None;
+                let mut last_seq: Option<BTreeMap<Address, u32>> = None;
 
                 // Читаем ключи и значения из map
                 while let Some(key) = map.next_key::<String>()? {
                     match key.as_str() {
                         "nodes" => {
-                            // Десериализуем nodes как HashMap<String, Node>
-                            let nodes_map: HashMap<Hash, Node> = map.next_value()?;
+                            // Десериализуем nodes как BTreeMap<String, Node>
+                            let nodes_map: BTreeMap<Hash, Node> = map.next_value()?;
                             // Преобразуем ключи String в доменный Hash
                             nodes = Some(
                                 nodes_map
@@ -445,8 +448,8 @@ impl<'de> Deserialize<'de> for Dag {
                             );
                         }
                         "added" => {
-                            // Десериализуем added как HashMap<String, u64>
-                            let added_map: HashMap<Hash, u64> = map.next_value()?;
+                            // Десериализуем added как BTreeMap<String, u64>
+                            let added_map: BTreeMap<Hash, u64> = map.next_value()?;
                             // Преобразуем ключи String в доменный Hash
                             added = Some(
                                 added_map
@@ -458,6 +461,9 @@ impl<'de> Deserialize<'de> for Dag {
                         "added_seq" => {
                             added_seq = Some(map.next_value::<u64>()?);
                         }
+                        "last_seq" => {
+                            last_seq = Some(map.next_value::<BTreeMap<Address, u32>>()?);
+                        }
                         // Игнорируем неизвестные поля
                         _ => {
                             let _ = map.next_value::<serde_json::Value>()?;
@@ -467,16 +473,19 @@ impl<'de> Deserialize<'de> for Dag {
 
                 // Проверяем наличие обязательного поля nodes, added может быть пустым
                 let nodes = nodes.unwrap_or_default();
-                let added: HashMap<Hash, u64> = added.unwrap_or_default();
+                let added: BTreeMap<Hash, u64> = added.unwrap_or_default();
                 // Для старых снапшотов без счётчика восстанавливаем его из максимума.
                 let added_seq =
                     added_seq.unwrap_or_else(|| added.values().copied().max().unwrap_or(0));
+                // Старые снапшоты не содержат карту `last_seq` (V18) — читается пустой.
+                let last_seq = last_seq.unwrap_or_default();
 
                 // Возвращаем заполненную структуру Dag
                 Ok(Dag {
                     nodes,
                     added,
                     added_seq,
+                    last_seq,
                 })
             }
         }
@@ -738,5 +747,64 @@ mod tests {
         });
         let dag: Dag = serde_json::from_value(legacy).unwrap();
         assert_eq!(dag.added_seq, 7);
+    }
+
+    #[test]
+    fn last_seq_survives_serialization_roundtrip() {
+        // V18: карта last_seq попадает в снапшот и переживает рестарт.
+        let mut dag = Dag::new();
+        for (node, seq) in [("a", 0u32), ("b", 5u32), ("c", 9u32)] {
+            dag.add_node_with_parents(
+                Hash::from(node),
+                Tx {
+                    prnts: vec![],
+                    addr: Address::from("addr"),
+                    seq,
+                    var: json!({ "ca": "a", "to": "b", "val": 1, "msg": "m" }),
+                },
+                String::new(),
+                Func::TransferToken,
+            )
+            .unwrap();
+        }
+
+        let raw = serde_json::to_string(&dag).unwrap();
+        let restored: Dag = serde_json::from_str(&raw).unwrap();
+        assert_eq!(restored.last_seq.get(&Address::from("addr")), Some(&9));
+        // Откат номера после восстановления отклоняется.
+        assert!(restored.accepts_seq(&Address::from("addr"), 9).is_err());
+        assert!(restored.accepts_seq(&Address::from("addr"), 10).is_ok());
+    }
+
+    #[test]
+    fn snapshot_serialization_is_deterministic() {
+        // V14/C36: одинаковое состояние даёт одинаковые байты снапшота
+        // независимо от порядка вставки (BTreeSet/BTreeMap).
+        fn build(order: &[&str]) -> Dag {
+            let mut dag = Dag::new();
+            for node in order {
+                dag.add_node_with_parents(
+                    Hash::from(*node),
+                    Tx {
+                        prnts: vec![],
+                        addr: Address::from(format!("addr-{node}")),
+                        seq: 0,
+                        var: json!({ "ca": "a", "to": "b", "val": 1, "msg": "m" }),
+                    },
+                    String::new(),
+                    Func::TransferToken,
+                )
+                .unwrap();
+            }
+            dag
+        }
+
+        let left = build(&["a", "b", "c", "d"]);
+        let right = build(&["d", "c", "b", "a"]);
+        assert_eq!(
+            serde_json::to_string(&left).unwrap(),
+            serde_json::to_string(&right).unwrap(),
+            "порядок вставки не должен влиять на байты снапшота"
+        );
     }
 }
