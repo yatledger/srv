@@ -44,15 +44,15 @@
 | D5 | Пагинация и лимиты `/pool` и `/full` | 🟡 | P3 | ✅ |
 | D6 | Корректные ответы и устранение тихой потери ошибок | 🟡 | P3 | ✅ |
 | D7 | Обработка фоновых задач и логи | 🟡 | P4 | ✅ |
-| O1 | Полный набор тестов | 🔵 | P1 | ⬜ |
-| O2 | Метрики, healthcheck/readiness | 🔵 | P2 | ⬜ |
-| O3 | Rate limiting и квоты | 🔵 | P2 | ⬜ |
-| O4 | Спецификация API | 🔵 | P2 | ⬜ |
-| O5 | Graceful shutdown, бэкап/восстановление | 🔵 | P2 | ⬜ |
-| O6 | Версионирование состояния и миграции | 🔵 | P3 | ⬜ |
-| O7 | Аудит-логирование | 🔵 | P3 | ⬜ |
-| O8 | Конфигурация под окружения | 🔵 | P3 | ⬜ |
-| O9 | Бенчмарки производительности | 🔵 | P4 | ⬜ |
+| O1 | Полный набор тестов | 🔵 | P1 | ✅ |
+| O2 | Метрики, healthcheck/readiness | 🔵 | P2 | ✅ |
+| O3 | Rate limiting и квоты | 🔵 | P2 | ✅ |
+| O4 | Спецификация API | 🔵 | P2 | ✅ |
+| O5 | Graceful shutdown, бэкап/восстановление | 🔵 | P2 | ✅ |
+| O6 | Версионирование состояния и миграции | 🔵 | P3 | ✅ |
+| O7 | Аудит-логирование | 🔵 | P3 | ✅ |
+| O8 | Конфигурация под окружения | 🔵 | P3 | ✅ |
+| O9 | Бенчмарки производительности | 🔵 | P4 | ✅ |
 
 ## Межблочные зависимости
 
@@ -88,6 +88,15 @@
 | 2026-10-09 | D2 | `.gitignore` расширен (`.env*`, `/data`, логи, `dump.rdb`); `Dockerfile` и `docker-compose.yml` (4 узла + Redis + bootstrap-`init`) поднимают кластер одной командой; `test.sh` переписан в рабочий сценарий (фон, ожидание готовности/лидера, токен, проверки). В этой сессии в `build.sh` добавлен завершающий перевод строки. |
 | 2026-10-09 | D4 | Добавлен `src/domain.rs` с newtype `Hash`, `Address` и enum `Func`; доменные сигнатуры (`Tx`, `Node`, `Request`, реестр `added`, валидаторы, хэш) переведены с `String`/`Arc<str>` на них. `#[serde(transparent)]`/строка для `Func` сохраняют канонический хэш (K2) и формат хранения. |
 | 2026-10-09 | D7 | `main.rs` удерживает `JoinHandle` фонового процессора и через `tokio::select!` завершает узел с ошибкой при неожиданной остановке задачи. Полная сериализация тел запросов/ответов убрана из `debug`-логов `web.rs` (пишутся адресат/статус/размер); из лога ошибки парсинга в `raft/router.rs` убрано тело ответа. |
+| 2026-10-09 | O1 | Наполнен `tests/cluster/test_cluster.rs`: 3 узла в одном процессе (свой runtime/HTTP-порт), сценарии init → add-learner → change-membership → репликация Add (через follower) → принудительный снапшот → рестарт узла с тем же `DATA_DIR` → 10 конкурентных записей. Добавлен integration-crate `tests/api/` (health/ready/metrics/openapi/docs, `/pool`+`/full`, 401 без токена, 400 на невалидную tx). Тесты требуют Redis (в CI — сервис), при его отсутствии пропускаются. |
+| 2026-10-09 | O2 | Добавлен `src/metrics.rs` (крейт `prometheus`, собственный `Registry`): метрики Raft (term/индексы/apply-lag/лидер/members), DAG (узлы, `added`, порог веса), счётчики очистки/tx/HTTP и гистограмма latency. `GET /metrics`, `/health`, `/ready` (лидер + Redis PING). JSON-логи (`LOG_FORMAT=json`) и корреляционный `x-request-id` через middleware; healthcheck в docker-compose. InfluxDB подключается внешним сборщиком Prometheus-формата. |
+| 2026-10-09 | O3 | Добавлен `src/ratelimit.rs` (token-bucket без внешних зависимостей) и middleware на публичном API; настраивается `PUBLIC_RATE_LIMIT_PER_SEC`/`PUBLIC_RATE_LIMIT_BURST`, ответ `429`. Advisory-лимит тела запроса `MAX_REQUEST_BYTES` (ответ `413`), существующие лимиты `prnts`/`msg` сохранены. |
+| 2026-10-09 | O4 | Добавлены `docs/openapi.json` (OpenAPI 3.0.3: публичные ручки, схемы `Tx`/`var`/`func`, коды ошибок) и `docs/API.md` (канонический хэш, подпись, правила валидации). Спецификация отдаётся `GET /openapi.json`, минимальный Swagger UI — `GET /docs` (без новых крейтов). |
+| 2026-10-09 | O5 | Добавлен `src/shutdown.rs` (`watch`-канал): `start_server` использует `with_graceful_shutdown`, `main` ловит Ctrl-C/SIGTERM и после остановки HTTP вызывает `Raft::shutdown`. Внутренняя ручка `POST /mng/snapshot`, скрипты `scripts/backup.sh`/`restore.sh` (снапшот + копия `DATA_DIR` + дамп Redis), процедура в README, тесты `shutdown`, идемпотентность и file-level backup/restore. |
+| 2026-10-09 | O6 | В `StateMachineData` добавлено поле `schema_version` (`#[serde(default)]`, старые снапшоты → 0) и `SCHEMA_VERSION = 2`; `migrate()` вызывается при `open()` и `install_snapshot`, версия «из будущего» отклоняется. Тесты миграции и загрузки старого снапшота без версии. |
+| 2026-10-09 | O7 | Добавлен `src/audit.rs`: структурированные события add/remove/membership с источником (`api`/`processor`/`genesis`/`management`), хэшами, id узла и результатом (target `audit`). Проставлены в `server.rs` (add/genesis), `cleanup.rs` (remove, источник `Api`/`Processor`) и `raft/api.rs` (membership). |
+| 2026-10-09 | O8 | В `AppConfig` добавлены `APP_PROFILE` (`dev`/`stage`/`prod`) и `LOG_FORMAT`; `validate()` собирает **все** проблемы конфигурации в одно сообщение (обязательные секреты, длина токена по профилю, `ADVERTISE_ADDR` для prod, диапазоны). Вызывается при старте до запуска узла; `.env.example` обновлён. |
+| 2026-10-09 | O9 | Добавлен `benches/graph_bench.rs` (criterion 0.5): `compute_descendants_with_depth_and_weight` (500 узлов), `get_nodes_by_depth` (1000), `add_node_with_parents`. CI проверяет компиляцию бенчмарков (`cargo bench --no-run`); базовые числа описаны в README. |
 
 ## Рекомендуемая последовательность
 
