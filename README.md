@@ -33,10 +33,10 @@ src/
 ├── web.rs           внутренний HTTP-клиент (пересылка на лидера, с токеном)
 ├── processor.rs     фоновая очистка «тяжёлых» узлов (ведёт лидер)
 ├── cleanup.rs       выбор кандидатов/тяжёлых узлов, архивация в Redis
-├── metrics.rs       реестр метрик Prometheus (O2)
-├── ratelimit.rs     token-bucket для публичного API (O3)
-├── shutdown.rs      graceful shutdown (O5)
-├── audit.rs         аудит-события add/remove/membership (O7)
+├── metrics.rs       реестр метрик Prometheus
+├── ratelimit.rs     token-bucket для публичного API
+├── shutdown.rs      graceful shutdown
+├── audit.rs         аудит-события add/remove/membership
 ├── graph/
 │   ├── dag.rs       DAG: узлы, родители/дети, реестр added, TxVar и валидация
 │   └── weights.rs   глубины и веса узлов (BFS, rayon)
@@ -49,10 +49,10 @@ src/
     ├── router.rs    HTTP-транспорт для Raft RPC
     └── api.rs       хендлеры /raft/* и /mng/*
 benches/
-└── graph_bench.rs   criterion-бенчмарки графа (O9)
+└── graph_bench.rs   criterion-бенчмарки графа
 scripts/
-├── backup.sh        бэкап DATA_DIR + Redis (O5)
-└── restore.sh       восстановление из бэкапа (O5)
+├── backup.sh        бэкап DATA_DIR + Redis
+└── restore.sh       восстановление из бэкапа
 ```
 
 **Поток записи.** Клиент шлёт подписанную транзакцию на `POST /`. Узел проверяет
