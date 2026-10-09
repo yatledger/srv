@@ -50,7 +50,10 @@ impl Router {
         debug!(">>> raft rpc to [{}] {}", to, url);
 
         let (status, body) = self.http.post_text(&url, &req).await.map_err(|e| {
-            error!("Failed to send request to {}: {}", url, e);
+            // Недоступность пира — штатная для Raft ситуация (сеть, рестарт, идущий
+            // shutdown): лидер ретраит и/или проходят выборы. Не логируем как ошибку,
+            // иначе вывод засоряется при остановке кластера и при падении реплики.
+            debug!("raft rpc to [{}] {} unreachable: {}", to, url, e);
             Unreachable::new(&std::io::Error::other(e.to_string()))
         })?;
 
