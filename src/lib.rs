@@ -20,6 +20,7 @@ pub mod cleanup;
 pub mod config;
 pub mod domain;
 pub mod graph;
+pub mod log_filter;
 pub mod metrics;
 pub mod processor;
 mod raft;
@@ -158,7 +159,8 @@ pub async fn start_raft(
     std::fs::create_dir_all(&data_dir)?;
 
     let log_store = PersistentLogStore::open(&data_dir.join("raft-log.redb"))?;
-    let state_machine_store = StateMachineStore::open(&data_dir.join("state-machine.redb"))?;
+    let state_machine_store =
+        StateMachineStore::open(&data_dir.join("state-machine.redb"), node_id)?;
 
     let internal_api_token: Arc<str> = Arc::from(cfg.internal_api_token()?);
     let raft_router = RaftRouter::new(

@@ -129,6 +129,27 @@ fn write_json_string(s: &str, out: &mut String) {
     }
 }
 
+/// Сокращает длинную строку (хэш/адрес) до `head…tail` для человекочитаемых
+/// логов. Короткие строки возвращаются как есть. UTF-8-безопасно.
+pub fn short_hash(value: &str) -> String {
+    const HEAD: usize = 8;
+    const TAIL: usize = 4;
+    let len = value.chars().count();
+    if len <= HEAD + TAIL + 1 {
+        return value.to_string();
+    }
+    let head: String = value.chars().take(HEAD).collect();
+    let tail: String = value
+        .chars()
+        .rev()
+        .take(TAIL)
+        .collect::<Vec<_>>()
+        .into_iter()
+        .rev()
+        .collect();
+    format!("{head}…{tail}")
+}
+
 /// Проверяет корректность списка родителей: длина, непустые и уникальные значения.
 pub fn validate_parents(parents: &[Hash]) -> Result<(), String> {
     // Check length constraints
@@ -215,6 +236,14 @@ mod tests {
     fn validate_func_rejects_unknown() {
         assert!(validate_func("transferToken").is_ok());
         assert!(validate_func("totallyUnknown").is_err());
+    }
+
+    #[test]
+    fn short_hash_truncates_with_ellipsis() {
+        assert_eq!(short_hash("abc"), "abc");
+        assert_eq!(short_hash("0123456789abcdef"), "01234567…cdef");
+        // Граница: ровно HEAD+TAIL+1 — не режем.
+        assert_eq!(short_hash("0123456789abc"), "0123456789abc");
     }
 
     #[test]

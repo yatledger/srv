@@ -6,7 +6,8 @@ use dagdb::{processor, server, start_raft};
 
 /// Настраивает подписчик логов: текстовый или JSON (O2), с корреляционными id.
 fn init_tracing(cfg: &AppConfig) {
-    let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
+    let filter = EnvFilter::try_from_default_env()
+        .unwrap_or_else(|_| EnvFilter::new(dagdb::log_filter::default_filter(false)));
 
     let builder = tracing_subscriber::fmt().with_env_filter(filter);
     match cfg.log_format {

@@ -152,6 +152,8 @@ async fn add_tx(
         Err(response) => return response,
     };
 
+    let short = crate::utils::short_hash(tx_hash.as_str());
+
     let metrics = app.raft.metrics().borrow().clone();
 
     let leader_id = match metrics.current_leader {
@@ -176,6 +178,8 @@ async fn add_tx(
     };
 
     if leader_id == app.id {
+        // Узел-лидер принимает запись в собственный Raft напрямую.
+        info!("нода {} получила транзакцию {short}", app.id);
         return add_handler(State(app), Json(internal_payload)).await;
     }
 
@@ -201,6 +205,9 @@ async fn add_tx(
         }
     };
 
+    // Узел-не-лидер получает запись и перенаправляет её лидеру.
+    info!("нода {} получила транзакцию {short}", app.id);
+
     // Перенаправляем запрос лидеру
     match app
         .router
@@ -208,6 +215,10 @@ async fn add_tx(
         .await
     {
         Ok(response) => {
+            info!(
+                "нода {} переправила транзакцию {short} на адрес {leader_addr}",
+                app.id
+            );
             debug!("Successfully forwarded to leader at {}", leader_addr);
             (StatusCode::OK, Json(ApiResponse::Success(response)))
         }

@@ -168,15 +168,39 @@ fn parse_sleep_secs(raw: &str) -> Result<f64, String> {
     Ok(secs)
 }
 
-/// Фильтр логирования по умолчанию.
+/// Фильтр логирования по умолчанию: события узлов (получила/переправила/записала)
+/// на `info`, внутренний шум `openraft` приглушён. `--verbose` — `debug`;
+/// `RUST_LOG` (если задан) имеет приоритет. См. [`dagdb::log_filter`].
+fn default_log_filter(verbose: bool) -> String {
+    dagdb::log_filter::default_filter(verbose)
+}
+
+/// Компактный форматтер логов для `loadgen`: `время LEVEL сообщение(поля)`.
 ///
-/// По умолчанию — `error`: в нагрузочном/демо-прогоне кластер сам себя инициализирует,
-/// и `openraft` сыпет диагностическими `WARN` при смене membership во время bootstrap
-/// (`membership_log_id changed: …`). Это не дефект, а внутренний шум, который портит
-/// наглядный вывод. `--verbose` возвращает `debug`, а `RUST_LOG` (если задан) имеет
-/// приоритет над этим значением.
-fn default_log_filter(verbose: bool) -> &'static str {
-    if verbose { "debug" } else { "error" }
+/// Стандартный `Full`-форматтер всегда печатает контекст текущего span
+/// (`http_request{request_id=… …}:`), что засоряет наглядный вывод событий узлов.
+/// Этот форматтер span-контекст не печатает.
+struct NodeLogFormat;
+
+impl<S, N> tracing_subscriber::fmt::FormatEvent<S, N> for NodeLogFormat
+where
+    S: tracing::Subscriber + for<'a> tracing_subscriber::registry::LookupSpan<'a>,
+    N: for<'a> tracing_subscriber::fmt::FormatFields<'a> + 'static,
+{
+    fn format_event(
+        &self,
+        ctx: &tracing_subscriber::fmt::FmtContext<'_, S, N>,
+        mut writer: tracing_subscriber::fmt::format::Writer<'_>,
+        event: &tracing::Event<'_>,
+    ) -> std::fmt::Result {
+        use tracing_subscriber::fmt::time::FormatTime;
+        let level = event.metadata().level();
+        let timer = tracing_subscriber::fmt::time::ChronoLocal::new("%H:%M:%S%.3f".to_string());
+        timer.format_time(&mut writer)?;
+        write!(writer, " {level:>5} ")?;
+        ctx.field_format().format_fields(writer.by_ref(), event)?;
+        writeln!(writer)
+    }
 }
 
 #[tokio::main]
@@ -184,9 +208,12 @@ async fn main() -> ExitCode {
     let cfg = LoadgenConfig::parse();
     let filter = tracing_subscriber::EnvFilter::try_from_default_env()
         .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new(default_log_filter(cfg.verbose)));
+    // События узлов и служебные логи идут в stderr, чтобы не мешать пофреймовому
+    // выводу и итоговому отчёту в stdout. Span-контекст не печатаем — он шумный.
     tracing_subscriber::fmt()
+        .event_format(NodeLogFormat)
         .with_env_filter(filter)
-        .with_target(false)
+        .with_writer(std::io::stderr)
         .init();
 
     match run(cfg).await {
@@ -310,7 +337,10 @@ mod tests {
 
     #[test]
     fn default_log_filter_quiet_unless_verbose() {
-        assert_eq!(default_log_filter(false), "error");
-        assert_eq!(default_log_filter(true), "debug");
+        let normal = default_log_filter(false);
+        assert!(normal.starts_with("info"), "получено: {normal}");
+        assert!(normal.contains("openraft=error"));
+        let verbose = default_log_filter(true);
+        assert!(verbose.starts_with("debug"), "получено: {verbose}");
     }
 }

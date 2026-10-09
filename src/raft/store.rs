@@ -170,6 +170,10 @@ pub struct StateMachineStore {
 
     /// Персистентное хранилище (None для in-memory режима).
     db: Option<Db>,
+
+    /// ID узла-владельца: используется только для человекочитаемых логов
+    /// применения (`нода N записала …`), на состояние/детерминизм не влияет.
+    node_id: crate::NodeId,
 }
 
 /// Именованные ключи в таблице метаданных для state machine.
@@ -180,7 +184,7 @@ const KEY_SM_SNAPSHOT: &str = "sm_snapshot";
 impl StateMachineStore {
     /// Открывает персистентное state machine по пути `path`, восстанавливая
     /// ранее сохранённое состояние (Dag, `added`, `last_applied`, membership).
-    pub fn open(path: &std::path::Path) -> Result<Arc<Self>, String> {
+    pub fn open(path: &std::path::Path, node_id: crate::NodeId) -> Result<Arc<Self>, String> {
         let db = Db::open(path)?;
 
         let state_machine: StateMachineData = match db.meta_get(KEY_SM_SNAPSHOT)? {
@@ -195,6 +199,7 @@ impl StateMachineStore {
             snapshot_idx: Mutex::new(0),
             current_snapshot: Mutex::new(None),
             db: Some(db),
+            node_id,
         }))
     }
 
@@ -337,7 +342,12 @@ impl RaftStateMachine<TypeConfig> for Arc<StateMachineStore> {
                                 sign.clone(),
                                 *func,
                             ) {
-                                Ok(()) => res.push(Response::ok()),
+                                Ok(()) => {
+                                    let node_id = self.node_id;
+                                    let short = crate::utils::short_hash(hash.as_str());
+                                    tracing::info!("нода {node_id} записала транзакцию {short}");
+                                    res.push(Response::ok())
+                                }
                                 Err(e) => {
                                     tracing::warn!("Failed to apply Add request: {}", e);
                                     res.push(Response::rejected(e));
@@ -688,7 +698,7 @@ mod tests {
 
         // Первый запуск: наполняем Dag и помечаем узел как удалённый (added).
         {
-            let store = StateMachineStore::open(&path).unwrap();
+            let store = StateMachineStore::open(&path, 1).unwrap();
             let mut sm = store.state_machine.write().await;
             let node = Hash::from("node-1");
             sm.dag
@@ -717,7 +727,7 @@ mod tests {
 
         // Второй запуск: состояние должно восстановиться, включая реестр added.
         {
-            let store = StateMachineStore::open(&path).unwrap();
+            let store = StateMachineStore::open(&path, 1).unwrap();
             let sm = store.state_machine.read().await;
             assert!(
                 sm.dag.contains_node(&Hash::from("node-1")),
@@ -756,7 +766,7 @@ mod tests {
         let entry = Entry::new(log_id, EntryPayload::Normal(req));
 
         {
-            let store = StateMachineStore::open(&path).unwrap();
+            let store = StateMachineStore::open(&path, 1).unwrap();
             let mut sm = store.clone();
             let res = sm.apply(vec![entry]).await.unwrap();
             assert_eq!(res[0], Response::ok());
@@ -771,7 +781,7 @@ mod tests {
         }
 
         {
-            let store = StateMachineStore::open(&path).unwrap();
+            let store = StateMachineStore::open(&path, 1).unwrap();
             let sm = store.state_machine.read().await;
             assert!(
                 sm.dag.contains_node(&node_hash),
@@ -795,7 +805,7 @@ mod tests {
             func: Func::TransferToken,
         };
 
-        let store = StateMachineStore::open(&path).unwrap();
+        let store = StateMachineStore::open(&path, 1).unwrap();
         let mut sm = store.clone();
 
         // Первое добавление успешно.
@@ -832,7 +842,7 @@ mod tests {
         // После reopen: узел остаётся удалённым (added переживает рестарт).
         drop(sm);
         drop(store);
-        let reopened = StateMachineStore::open(&path).unwrap();
+        let reopened = StateMachineStore::open(&path, 1).unwrap();
         let guard = reopened.state_machine.read().await;
         assert!(!guard.dag.contains_node(&node_hash));
         assert!(guard.dag.is_node_added(&node_hash));
@@ -846,7 +856,7 @@ mod tests {
         // Даже если ранняя проверка на входе пропустила запрос, state machine
         // (авторитетная точка) отклоняет его при применении.
         let path = temp_path("apply-missing-parent");
-        let store = StateMachineStore::open(&path).unwrap();
+        let store = StateMachineStore::open(&path, 1).unwrap();
         let mut sm = store.clone();
 
         let req = Request::Add {
@@ -916,7 +926,7 @@ mod tests {
             )
             .unwrap();
         }
-        let store = StateMachineStore::open(&path).expect("старый снапшот должен загрузиться");
+        let store = StateMachineStore::open(&path, 1).expect("старый снапшот должен загрузиться");
         let sm = store.state_machine.read().await;
         assert_eq!(sm.schema_version, SCHEMA_VERSION);
     }
@@ -928,7 +938,7 @@ mod tests {
         let path = temp_path("backup-source");
         let node = Hash::from("backup-node");
         {
-            let store = StateMachineStore::open(&path).unwrap();
+            let store = StateMachineStore::open(&path, 1).unwrap();
             let mut sm = store.state_machine.write().await;
             sm.dag
                 .add_node_with_parents(
@@ -946,7 +956,7 @@ mod tests {
         std::fs::copy(&path, &backup).unwrap();
 
         // «Восстановление»: открываем копию и видим тот же узел.
-        let restored = StateMachineStore::open(&backup).unwrap();
+        let restored = StateMachineStore::open(&backup, 1).unwrap();
         let sm = restored.state_machine.read().await;
         assert!(sm.dag.contains_node(&node));
         assert_eq!(sm.schema_version, SCHEMA_VERSION);
