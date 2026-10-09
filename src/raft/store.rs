@@ -194,7 +194,7 @@ impl RaftSnapshotBuilder<TypeConfig> for Arc<StateMachineStore> {
         }
 
         let snapshot_idx = {
-            let mut l = self.snapshot_idx.lock().unwrap();
+            let mut l = self.snapshot_idx.lock().unwrap_or_else(|e| e.into_inner());
             *l += 1;
             *l
         };
@@ -225,7 +225,10 @@ impl RaftSnapshotBuilder<TypeConfig> for Arc<StateMachineStore> {
             .map_err(|e| sm_storage_error(openraft::ErrorVerb::Write, e))?;
 
         {
-            let mut current_snapshot = self.current_snapshot.lock().unwrap();
+            let mut current_snapshot = self
+                .current_snapshot
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
             *current_snapshot = Some(snapshot);
         }
 
@@ -363,14 +366,21 @@ impl RaftStateMachine<TypeConfig> for Arc<StateMachineStore> {
         }
 
         // Update current snapshot.
-        let mut current_snapshot = self.current_snapshot.lock().unwrap();
+        let mut current_snapshot = self
+            .current_snapshot
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         *current_snapshot = Some(new_snapshot);
         Ok(())
     }
 
     #[tracing::instrument(level = "trace", skip(self))]
     async fn get_current_snapshot(&mut self) -> Result<Option<Snapshot>, StorageError> {
-        match &*self.current_snapshot.lock().unwrap() {
+        match &*self
+            .current_snapshot
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+        {
             Some(snapshot) => {
                 let data = snapshot.data.clone();
                 Ok(Some(Snapshot {

@@ -105,7 +105,12 @@ fn find_descendants_cached(
     start_node: &Arc<str>,
     memo: &Mutex<HashMap<Arc<str>, Arc<Vec<NodeInfo>>>>,
 ) -> Arc<Vec<NodeInfo>> {
-    if let Some(cached) = memo.lock().unwrap().get(start_node).cloned() {
+    if let Some(cached) = memo
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .get(start_node)
+        .cloned()
+    {
         return cached;
     }
 
@@ -132,7 +137,11 @@ fn find_descendants_cached(
 
         // Если для текущего узла есть готовый результат, переиспользуем его,
         // не обходя подграф повторно.
-        let cached = memo.lock().unwrap().get(&current).cloned();
+        let cached = memo
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(&current)
+            .cloned();
         if let Some(cached) = cached {
             for d in cached.iter() {
                 let depth = relative_depth + d.depth;
@@ -155,7 +164,7 @@ fn find_descendants_cached(
 
     let result = Arc::new(descendants);
     memo.lock()
-        .unwrap()
+        .unwrap_or_else(|e| e.into_inner())
         .insert(start_node.clone(), Arc::clone(&result));
     result
 }

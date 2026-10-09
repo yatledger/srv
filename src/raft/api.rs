@@ -39,7 +39,7 @@ pub async fn add_learner(
         .add_learner(node_id, node, true)
         .await
         .decompose()
-        .unwrap()
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
 
     Ok(Json(res))

@@ -19,13 +19,18 @@ pub struct Router {
 
 impl Router {
     pub fn new(timeout: Duration, connect_timeout: Duration, internal_token: String) -> Self {
+        // `build` может упасть только при инициализации TLS-бэкенда; не паникуем,
+        // а откатываемся на клиент по умолчанию.
         let client = Client::builder()
             .timeout(timeout)
             .connect_timeout(connect_timeout)
             .pool_idle_timeout(Duration::from_secs(45))
             .pool_max_idle_per_host(10)
             .build()
-            .expect("Failed to create HTTP client");
+            .unwrap_or_else(|e| {
+                error!("Failed to build HTTP client for Raft ({e}); using default client");
+                Client::new()
+            });
 
         Router {
             client,

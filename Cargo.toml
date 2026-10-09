@@ -25,4 +25,5 @@ hex = "0.4.3"
 itertools = "0.14.0"
 blake3 = "1.8.2"
 redb = "2.6.4"
+thiserror = "2.0"
 #anyhow = "1.0.98" кастомные ошибки

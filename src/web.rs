@@ -16,11 +16,15 @@ pub enum ApiResponse<T> {
 }
 
 /// Универсальный тип ошибки для ApiRouter, описывающий все возможные проблемы.
-#[derive(Debug)]
+#[derive(Debug, thiserror::Error)]
 pub enum ApiRouterError {
+    #[error("network error: {0}")]
     Network(reqwest::Error),
+    #[error("HTTP error {status}: {text}")]
     Http { status: StatusCode, text: String },
+    #[error("API error: {message}")]
     Api { message: String },
+    #[error("deserialization error: {0}")]
     Deserialization(serde_json::Error),
 }
 
@@ -46,11 +50,16 @@ pub struct Router {
 
 impl Router {
     pub fn new(timeout: Duration, connect_timeout: Duration, internal_token: String) -> Self {
+        // `build` может упасть только при инициализации TLS-бэкенда; не паникуем,
+        // а откатываемся на клиент по умолчанию.
         let client = Client::builder()
             .timeout(timeout)
             .connect_timeout(connect_timeout)
             .build()
-            .expect("Failed to create HTTP client for ApiRouter");
+            .unwrap_or_else(|e| {
+                error!("Failed to build HTTP client for ApiRouter ({e}); using default client");
+                Client::new()
+            });
         Self {
             client,
             internal_token,
@@ -74,11 +83,11 @@ impl Router {
             addr.trim_end_matches('/'),
             path.trim_start_matches('/')
         );
-        debug!(
-            ">>> API request send to {}: {}",
-            url,
-            serde_json::to_string(&req).unwrap()
-        );
+        if let Ok(body) = serde_json::to_string(&req) {
+            debug!(">>> API request send to {}: {}", url, body);
+        } else {
+            debug!(">>> API request send to {}", url);
+        }
 
         let response = self
             .client
@@ -120,5 +129,29 @@ impl Default for Router {
             Duration::from_secs(3),
             String::new(),
         )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn api_router_error_is_a_std_error_with_display() {
+        let err = ApiRouterError::Api {
+            message: "boom".to_string(),
+        };
+        // Реализует Display и std::error::Error.
+        assert_eq!(err.to_string(), "API error: boom");
+        let _: &dyn std::error::Error = &err;
+    }
+
+    #[test]
+    fn http_error_display_includes_status() {
+        let err = ApiRouterError::Http {
+            status: StatusCode::UNAUTHORIZED,
+            text: "no token".to_string(),
+        };
+        assert!(err.to_string().contains("401"));
     }
 }

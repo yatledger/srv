@@ -182,12 +182,27 @@ async fn add_tx(
         return add_handler(State(app), Json(internal_payload)).await;
     }
 
-    let leader_addr = metrics
+    let leader_addr = match metrics
         .membership_config
         .nodes()
         .find(|(id, _)| **id == leader_id)
         .map(|(_, node)| node.addr.clone())
-        .expect("NO LEADER ADDR");
+    {
+        Some(addr) => addr,
+        None => {
+            error!(
+                "Leader {} is not present in membership config on node {}",
+                leader_id, app.id
+            );
+            return (
+                StatusCode::SERVICE_UNAVAILABLE,
+                Json(ApiResponse::Error {
+                    status: "error".to_string(),
+                    message: "Leader address is unknown".to_string(),
+                }),
+            );
+        }
+    };
 
     // Перенаправляем запрос лидеру
     match app
