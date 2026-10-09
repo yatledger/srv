@@ -501,7 +501,7 @@ async fn openapi_handler() -> Response {
             header::CONTENT_TYPE,
             HeaderValue::from_static("application/json"),
         )],
-        include_str!("../docs/openapi.json"),
+        include_str!("../docs/api/openapi.json"),
     )
         .into_response()
 }
