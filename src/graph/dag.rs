@@ -31,8 +31,17 @@ pub struct NodeTime {
 #[derive(Debug, Clone)]
 pub struct Dag {
     nodes: HashMap<Arc<str>, Node>,
+    /// Реестр удалённых узлов: хэш -> логический номер удаления.
+    /// Номер детерминирован (порядок удалений), а не привязан к системным часам,
+    /// чтобы состояние совпадало на всех репликах.
     added: HashMap<Arc<str>, u64>,
+    /// Счётчик логических номеров удаления (монотонно растёт).
+    added_seq: u64,
 }
+
+/// Верхняя граница размера реестра `added`. При превышении вытесняются самые
+/// старые записи, чтобы память не росла бесконечно. Ограничение детерминировано.
+pub const MAX_ADDED_ENTRIES: usize = 100_000;
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct TxVar {
@@ -70,6 +79,7 @@ impl Dag {
         Dag {
             nodes: HashMap::new(),
             added: HashMap::new(),
+            added_seq: 0,
         }
     }
 
@@ -210,12 +220,33 @@ impl Dag {
             }
         }
         self.nodes.remove(&node);
-        // Добавляем удаленный узел в added с текущим временем в микросекундах
-        let timestamp = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_micros() as u64)
-            .unwrap_or(0);
-        self.added.insert(node, timestamp);
+        // Добавляем удаленный узел в added с монотонным логическим номером.
+        // Детерминировано: порядок удалений одинаков на всех репликах.
+        self.added_seq = self.added_seq.wrapping_add(1);
+        let seq = self.added_seq;
+        self.added.insert(node, seq);
+        self.evict_added_if_needed();
+    }
+
+    /// Ограничивает размер реестра `added`, вытесняя самые старые записи.
+    /// Вытеснение детерминировано (сортировка по логическому номеру и хэшу).
+    fn evict_added_if_needed(&mut self) {
+        self.evict_added_to(MAX_ADDED_ENTRIES);
+    }
+
+    /// Вытесняет записи из `added` до размера `max` (тестируемая версия).
+    fn evict_added_to(&mut self, max: usize) {
+        if self.added.len() <= max {
+            return;
+        }
+        let mut entries: Vec<(Arc<str>, u64)> =
+            self.added.iter().map(|(k, v)| (k.clone(), *v)).collect();
+        // Старые — в начале; при равных номерах порядок стабилен по хэшу.
+        entries.sort_by(|a, b| a.1.cmp(&b.1).then_with(|| a.0.cmp(&b.0)));
+        let remove_count = self.added.len() - max;
+        for (key, _) in entries.into_iter().take(remove_count) {
+            self.added.remove(&key);
+        }
     }
 
     pub fn remove_nodes(&mut self, nodes: Vec<Arc<str>>) -> Result<(), String> {
@@ -351,13 +382,15 @@ impl Serialize for Dag {
     where
         S: Serializer,
     {
-        // В снапшот/на диск обязаны попадать и узлы, и реестр `added`, иначе
-        // удалённые узлы «воскреснут» после рестарта (нарушение инварианта).
-        let mut map = serializer.serialize_map(Some(2))?;
+        // В снапшот/на диск обязаны попадать и узлы, и реестр `added`, и
+        // монотонный счётчик удалений, иначе удалённые узлы «воскреснут» после
+        // рестарта, а номера продолжат расходиться (нарушение инварианта).
+        let mut map = serializer.serialize_map(Some(3))?;
         let nodes: HashMap<&str, &Node> = self.nodes.iter().map(|(k, v)| (k.as_ref(), v)).collect();
         let added: HashMap<&str, &u64> = self.added.iter().map(|(k, v)| (k.as_ref(), v)).collect();
         map.serialize_entry("nodes", &nodes)?;
         map.serialize_entry("added", &added)?;
+        map.serialize_entry("added_seq", &self.added_seq)?;
         map.end()
     }
 }
@@ -384,6 +417,7 @@ impl<'de> Deserialize<'de> for Dag {
                 // Инициализируем поля для хранения данных
                 let mut nodes = None;
                 let mut added = None;
+                let mut added_seq = None;
 
                 // Читаем ключи и значения из map
                 while let Some(key) = map.next_key::<String>()? {
@@ -410,6 +444,9 @@ impl<'de> Deserialize<'de> for Dag {
                                     .collect(),
                             );
                         }
+                        "added_seq" => {
+                            added_seq = Some(map.next_value::<u64>()?);
+                        }
                         // Игнорируем неизвестные поля
                         _ => {
                             let _ = map.next_value::<serde_json::Value>()?;
@@ -419,10 +456,17 @@ impl<'de> Deserialize<'de> for Dag {
 
                 // Проверяем наличие обязательного поля nodes, added может быть пустым
                 let nodes = nodes.unwrap_or_default();
-                let added = added.unwrap_or_default();
+                let added: HashMap<Arc<str>, u64> = added.unwrap_or_default();
+                // Для старых снапшотов без счётчика восстанавливаем его из максимума.
+                let added_seq =
+                    added_seq.unwrap_or_else(|| added.values().copied().max().unwrap_or(0));
 
                 // Возвращаем заполненную структуру Dag
-                Ok(Dag { nodes, added })
+                Ok(Dag {
+                    nodes,
+                    added,
+                    added_seq,
+                })
             }
         }
 
@@ -596,5 +640,96 @@ mod tests {
         assert!(!dag.contains_node(&a));
         assert!(dag.is_node_added(&a));
         assert!(!dag.is_node_added(&Arc::from("absent")));
+    }
+
+    #[test]
+    fn added_sequence_is_monotonic_and_deterministic() {
+        let mut dag = Dag::new();
+        for i in 0..3u32 {
+            let node: Arc<str> = Arc::from(format!("n{i}").as_str());
+            dag.add_node_with_parents(
+                node.clone(),
+                valid_tx(vec![]),
+                String::new(),
+                "transferToken".to_string(),
+            )
+            .unwrap();
+            dag.remove_node(node);
+        }
+        // Логические номера отражают порядок удаления, а не системное время.
+        assert_eq!(dag.added.get(&Arc::from("n0")), Some(&1));
+        assert_eq!(dag.added.get(&Arc::from("n1")), Some(&2));
+        assert_eq!(dag.added.get(&Arc::from("n2")), Some(&3));
+    }
+
+    #[test]
+    fn added_evicts_oldest_beyond_limit() {
+        let mut dag = Dag::new();
+        for i in 0..5u32 {
+            let node: Arc<str> = Arc::from(format!("n{i}").as_str());
+            dag.add_node_with_parents(
+                node.clone(),
+                valid_tx(vec![]),
+                String::new(),
+                "transferToken".to_string(),
+            )
+            .unwrap();
+            dag.remove_node(node);
+        }
+        // Оставляем только 2 самые новые записи.
+        dag.evict_added_to(2);
+        assert!(!dag.is_node_added(&Arc::from("n0")));
+        assert!(!dag.is_node_added(&Arc::from("n1")));
+        assert!(!dag.is_node_added(&Arc::from("n2")));
+        assert!(dag.is_node_added(&Arc::from("n3")));
+        assert!(dag.is_node_added(&Arc::from("n4")));
+    }
+
+    #[test]
+    fn added_and_seq_survive_serialization_roundtrip() {
+        let mut dag = Dag::new();
+        for i in 0..2u32 {
+            let node: Arc<str> = Arc::from(format!("n{i}").as_str());
+            dag.add_node_with_parents(
+                node.clone(),
+                valid_tx(vec![]),
+                String::new(),
+                "transferToken".to_string(),
+            )
+            .unwrap();
+            dag.remove_node(node);
+        }
+
+        let json = serde_json::to_string(&dag).unwrap();
+        let restored: Dag = serde_json::from_str(&json).unwrap();
+
+        assert!(restored.is_node_added(&Arc::from("n0")));
+        assert!(restored.is_node_added(&Arc::from("n1")));
+        assert_eq!(restored.added_seq, 2);
+
+        // Новое удаление после восстановления продолжает нумерацию.
+        let mut restored = restored;
+        let node: Arc<str> = Arc::from("n2");
+        restored
+            .add_node_with_parents(
+                node.clone(),
+                valid_tx(vec![]),
+                String::new(),
+                "transferToken".to_string(),
+            )
+            .unwrap();
+        restored.remove_node(node);
+        assert_eq!(restored.added.get(&Arc::from("n2")), Some(&3));
+    }
+
+    #[test]
+    fn legacy_snapshot_without_seq_restores_counter() {
+        // Старый снапшот без added_seq должен восстановить счётчик из максимума.
+        let legacy = json!({
+            "nodes": {},
+            "added": { "x": 7, "y": 3 }
+        });
+        let dag: Dag = serde_json::from_value(legacy).unwrap();
+        assert_eq!(dag.added_seq, 7);
     }
 }
