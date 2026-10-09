@@ -23,10 +23,10 @@ pub struct Db {
 impl Db {
     /// Открывает (при необходимости создаёт) базу по указанному пути.
     pub fn open(path: &Path) -> Result<Self, String> {
-        if let Some(parent) = path.parent() {
-            if !parent.as_os_str().is_empty() {
-                std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
-            }
+        if let Some(parent) = path.parent()
+            && !parent.as_os_str().is_empty()
+        {
+            std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
         }
         let db = Database::create(path).map_err(|e| e.to_string())?;
         // Гарантируем существование таблиц, чтобы их можно было открывать на чтение.

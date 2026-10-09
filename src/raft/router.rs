@@ -47,18 +47,15 @@ impl Router {
 
         let (status, body) = self.http.post_text(&url, &req).await.map_err(|e| {
             error!("Failed to send request to {}: {}", url, e);
-            Unreachable::new(&std::io::Error::new(
-                std::io::ErrorKind::Other,
-                e.to_string(),
-            ))
+            Unreachable::new(&std::io::Error::other(e.to_string()))
         })?;
 
         if !status.is_success() {
             error!("HTTP error {} from {}: {}", status, url, body);
-            return Err(Unreachable::new(&std::io::Error::new(
-                std::io::ErrorKind::Other,
-                format!("HTTP error {}: {}", status, body),
-            )));
+            return Err(Unreachable::new(&std::io::Error::other(format!(
+                "HTTP error {}: {}",
+                status, body
+            ))));
         }
 
         if body.is_empty() {

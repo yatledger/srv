@@ -65,10 +65,10 @@ impl TxVar {
         if self.to.trim().is_empty() {
             return Err("var.to must not be empty".to_string());
         }
-        if let Some(msg) = &self.msg {
-            if msg.len() > 2500 {
-                return Err("var.msg must not exceed 2500 characters".to_string());
-            }
+        if let Some(msg) = &self.msg
+            && msg.len() > 2500
+        {
+            return Err("var.msg must not exceed 2500 characters".to_string());
         }
         Ok(())
     }
@@ -195,7 +195,7 @@ impl Dag {
             })
             .collect::<Vec<NodeTime>>();
         // Сортируем узлы по времени по возрастанию
-        nodes.sort_by(|a, b| a.time.cmp(&b.time));
+        nodes.sort_by_key(|a| a.time);
         nodes
     }
 

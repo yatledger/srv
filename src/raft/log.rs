@@ -481,10 +481,7 @@ where
                 Ok(())
             }
             Err(e) => {
-                callback.io_completed(Err(std::io::Error::new(
-                    std::io::ErrorKind::Other,
-                    e.to_string(),
-                )));
+                callback.io_completed(Err(std::io::Error::other(e.to_string())));
                 Err(e)
             }
         }

@@ -133,10 +133,10 @@ fn client() -> reqwest::Client {
 
 async fn wait_ready(client: &reqwest::Client, base: &str) {
     for _ in 0..200 {
-        if let Ok(resp) = client.get(format!("{base}/health")).send().await {
-            if resp.status().is_success() {
-                return;
-            }
+        if let Ok(resp) = client.get(format!("{base}/health")).send().await
+            && resp.status().is_success()
+        {
+            return;
         }
         sleep(Duration::from_millis(50)).await;
     }
@@ -165,12 +165,10 @@ async fn wait_leader(client: &reqwest::Client, base: &str) -> u64 {
             .header("x-internal-token", TOKEN)
             .send()
             .await
+            && let Ok(v) = resp.json::<Value>().await
+            && let Some(id) = v["current_leader"].as_u64()
         {
-            if let Ok(v) = resp.json::<Value>().await {
-                if let Some(id) = v["current_leader"].as_u64() {
-                    return id;
-                }
-            }
+            return id;
         }
         sleep(Duration::from_millis(50)).await;
     }
@@ -180,12 +178,11 @@ async fn wait_leader(client: &reqwest::Client, base: &str) -> u64 {
 /// Ждёт, пока узел увидит хотя бы `min_nodes` узлов в DAG.
 async fn wait_node_count(client: &reqwest::Client, base: &str, min_nodes: u64) {
     for _ in 0..200 {
-        if let Ok(resp) = client.get(format!("{base}/full")).send().await {
-            if let Ok(v) = resp.json::<Value>().await {
-                if v["total"].as_u64().unwrap_or(0) >= min_nodes {
-                    return;
-                }
-            }
+        if let Ok(resp) = client.get(format!("{base}/full")).send().await
+            && let Ok(v) = resp.json::<Value>().await
+            && v["total"].as_u64().unwrap_or(0) >= min_nodes
+        {
+            return;
         }
         sleep(Duration::from_millis(50)).await;
     }

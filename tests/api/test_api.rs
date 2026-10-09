@@ -94,10 +94,10 @@ fn client() -> reqwest::Client {
 async fn wait_ready(base: &str) {
     let client = client();
     for _ in 0..200 {
-        if let Ok(resp) = client.get(format!("{base}/health")).send().await {
-            if resp.status().is_success() {
-                return;
-            }
+        if let Ok(resp) = client.get(format!("{base}/health")).send().await
+            && resp.status().is_success()
+        {
+            return;
         }
         sleep(Duration::from_millis(50)).await;
     }
