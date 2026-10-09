@@ -22,14 +22,14 @@
 |----|--------|---------|----------|-----------|--------|
 | K1 | Доводить прикладной отказ SM до клиента | C34 | 🔴 | P0 | ✅ |
 | K2 | Валидировать `genesis.json` (хэш/структура) | C35, S15 | 🔴 | P0 | ✅ |
-| V11 | Починить сборку Docker (benches/docs) | S12 | 🟠 | P1 | ⬜ |
-| V12 | Убрать дефолтные секреты из compose | D13 | 🟠 | P1 | ⬜ |
-| V13 | Типизировать результат apply | C43 | 🟠 | P2 | ⬜ |
-| V14 | Детерминизм порядка и `Node.time` | C36, C37 | 🟠 | P2 | ⬜ |
-| V15 | Семантика родителей из `added` | C38 | 🟠 | P2 | ⬜ |
-| V16 | `load_genesis` через лидера | S16 | 🟠 | P2 | ⬜ |
-| V17 | Учитывать отмену передачи снапшота | C40 | 🟠 | P2 | ⬜ |
-| V18 | Монотонность `seq` по адресу (анти-replay) | C45 | 🟠 | P1 | ⬜ |
+| V11 | Починить сборку Docker (benches/docs) | S12 | 🟠 | P1 | ✅ |
+| V12 | Убрать дефолтные секреты из compose | D13 | 🟠 | P1 | ✅ |
+| V13 | Типизировать результат apply | C43 | 🟠 | P2 | ✅ |
+| V14 | Детерминизм порядка и `Node.time` | C36, C37 | 🟠 | P2 | ✅ |
+| V15 | Семантика родителей из `added` | C38 | 🟠 | P2 | ✅ |
+| V16 | `load_genesis` через лидера | S16 | 🟠 | P2 | ✅ |
+| V17 | Учитывать отмену передачи снапшота | C40 | 🟠 | P2 | ✅ |
+| V18 | Монотонность `seq` по адресу (анти-replay) | C45 | 🟠 | P1 | ✅ |
 | Q1 | Публичный `/metrics` — оставить (решено) | D10 | 🟡 | P3 | ✅ |
 | Q2 | Не держать read-лок на `/pool`/`/full` | C41 | 🟡 | P3 | ⬜ |
 | Q3 | Не маскировать ошибку HTTP-клиента | C42 | 🟡 | P3 | ⬜ |
@@ -81,3 +81,4 @@
 | 2026-10-09 | — | Проведён повторный аудит (коммит `a1f4bf0`): `check`/`clippy`/`test` зелёные (Redis недоступен — интеграционные пропущены); сверены статусы big-bang; заведены находки `S12–S16`, `D10–D13`, `C34–C45` и задачи `K1–K2`, `V11–V18`, `Q1–Q8`. Исходный код не менялся. |
 | 2026-10-09 | — | Зафиксированы ответы владельца: D10/Q1 закрыты решением (публичный `/metrics`), `genesis.json` — канонические хэши (K2 P0), монотонный `seq` — нужен (заведён C45/V18), Redis — окончательная зависимость. |
 | 2026-10-09 | K1, K2 | Реализованы критические задачи. **K1/C34:** введён типизированный `ApplyResult { Ok, Rejected(String) }`, `Response::{ok,rejected,blank,as_result}` (`raft/command.rs`); все точки записи проверяют прикладной результат и возвращают `400`/`audit result=error` (`server.rs::add_handler`, `server.rs::load_genesis`, `cleanup.rs::archive_and_remove`); `add_tx` сохраняет 4xx при пересылке лидеру. **K2/C35/S15:** `tx_logic::validate_genesis` сверяет объявленный хэш с `ordered_sum(tx, func)` и структуру `var`; `load_genesis` его применяет; `genesis.json` перегенерирован с каноническими хэшами. Тесты: типы `Response`, `validate_genesis`, каноничность `genesis.json`, `api::public_add_rejects_missing_parent_with_4xx`. `fmt`/`clippy -D warnings`/`test --all` зелёные (97 lib + 5 api + 1 cluster). |
+| 2026-10-09 | V11–V18 | Реализован важный блок. **V11/S12:** `Dockerfile` копирует `benches/` и `docs/`. **V12/D13:** compose требует `REDIS_PASSWORD`/`INTERNAL_API_TOKEN` из окружения (`:?`), помечен local-only. **V16/S16:** `load_genesis` требует лидера (`503` иначе). **V18/C45:** `Dag.last_seq: BTreeMap<Address,u32>`, `validate_add` отклоняет `seq <= last` (пустой addr генезиса освобождён), `SCHEMA_VERSION` 2→3. **V14/C36,C37:** `BTreeSet`/`BTreeMap` для `Node.parents/children` и `nodes/added/last_seq`; удалены `Node.time`/`NodeTime`/`get_time`; добавлен тест детерминизма снапшота. **V15/C38:** родитель только из `added` отклоняется в `validate_add` и `validate_against_state`. **V17/C40:** `full_snapshot` учитывает `cancel` через `tokio::select!`. **V13/C43** закрыт в K1. Тесты: детерминизм снапшота, roundtrip `last_seq`, анти-replay, отказ по `added`-родителю. `fmt`/`clippy -D warnings`/`test --all` зелёные (102 lib + 5 api + 1 cluster); `docker compose config` валиден. |

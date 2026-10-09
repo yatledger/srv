@@ -1,10 +1,31 @@
 # ТЗ №2. Важный уровень 🟠
 
-> Группа: **edits/audit/second-pass** · Тип: аудит · Блок задач `V*` · Статус: активен.
+> Группа: **edits/audit/second-pass** · Тип: аудит · Блок задач `V*` · Статус: ✅ **V11–V18 выполнены**.
 > Ссылки на `src/...:NN` — состояние на коммите `a1f4bf0`.
 >
 > Сопутствующие документы: [`audit.md`](audit.md), [`01-critical.md`](01-critical.md),
 > [`03-quality.md`](03-quality.md), [`tracker.md`](tracker.md).
+
+## 0. Статус реализации
+
+Все задачи блока закрыты:
+
+- **V11 ✅** — `Dockerfile` копирует `benches/` и `docs/`; `docker compose build` собирается.
+- **V12 ✅** — из `docker-compose.yml` убраны дефолтные секреты: `${REDIS_PASSWORD:?}` и
+  `${INTERNAL_API_TOKEN:?}` обязаны приходить из окружения; файл помечен local-only.
+- **V13 ✅** — выполнена в рамках K1: введён `ApplyResult`, все точки записи проверяют
+  `response.data.as_result()`.
+- **V14 ✅** — `Node.parents/children` → `BTreeSet`, `nodes`/`added`/`last_seq` → `BTreeMap`;
+  поле `Node.time` (wall-clock) и `NodeTime`/`get_time` удалены. Снапшот детерминирован.
+- **V15 ✅** — родитель, оставшийся только в реестре `added`, **отклоняется** (и в
+  `validate_add`, и в ранней `validate_against_state`); `Node.parents` больше не бывает неполным.
+- **V16 ✅** — `load_genesis` требует `current_leader == self` (иначе `503`): genesis-узлы
+  не подписаны и не могут идти через `/add`, поэтому запись безопасно ограничена лидером.
+- **V17 ✅** — `full_snapshot` учитывает токен отмены через `tokio::select!` и возвращает
+  `StreamingError::Closed`.
+- **V18 ✅** — в `Dag` добавлена карта `last_seq: addr → последний seq`; `validate_add`
+  отклоняет `seq <= last` (детерминированно); пустой `addr` bootstrap-генезиса освобождён.
+  `SCHEMA_VERSION` поднята 2 → 3; старое поле читается как пустая карта.
 
 ## 1. Цель
 
@@ -20,7 +41,8 @@
 | V14 | Недетерминизм порядка и `Node.time` в DAG | C36, C37 | P2 |
 | V15 | Семантика родителей из реестра `added` | C38 | P2 |
 | V16 | Писать через лидера в `load_genesis` (не ронять genesis) | S16 | P2 |
-| V17 | Учитывать отмену при передаче снапшота | C40 | P2 || V18 | Монотонность `seq` по адресу (анти-replay) | C45 | P1 |
+| V17 | Учитывать отмену при передаче снапшота | C40 | P2 |
+| V18 | Монотонность `seq` по адресу (анти-replay) | C45 | P1 |
 
 ## 3. Технические требования
 
