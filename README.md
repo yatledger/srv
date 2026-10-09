@@ -13,7 +13,7 @@
 
 ## Стек
 
-- **Rust** (edition 2024)
+- **Rust**
 - **openraft 0.10** — консенсус Raft (git databendlabs)
 - **axum 0.7** + **tokio** — HTTP-сервер и асинхронный runtime
 - **redb** — персистентное хранение Raft-лога и state machine (чистый Rust)
@@ -273,7 +273,7 @@ curl http://127.0.0.1:21001/full
 - Аудит значимых операций (add/remove/membership) пишется в лог с
   `target="audit"` и указанием источника (`api`/`processor`/`genesis`/`management`).
 
-## Graceful shutdown и бэкап (O5)
+## Graceful shutdown и бэкап
 
 По `Ctrl-C`/`SIGTERM` узел перестаёт принимать запросы
 (`with_graceful_shutdown`), затем финализирует Raft (`Raft::shutdown`) — состояние
@@ -293,7 +293,7 @@ NODE_URL=http://127.0.0.1:21001 DATA_DIR=./data/node1 \
 BACKUP_SNAPSHOT=./backups/<timestamp> DATA_DIR=./data/node1 ./scripts/restore.sh
 ```
 
-## Бенчмарки (O9)
+## Бенчмарки
 
 ```bash
 cargo bench
@@ -308,7 +308,7 @@ CI проверяет компиляцию бенчмарков (`cargo bench --
 (`add_node_with_parents`, включая сериализацию JSON) — ~3.6 мкс (~280k вставок/с
 на поток).
 
-## Нагрузочное тестирование (loadgen, N01)
+## Нагрузочное тестирование (loadgen)
 
 `loadgen` — отдельный рантайм-инструмент (вне `cargo test`), который поднимает
 **in-process кластер** `dagdb`, гонит валидный поток подписанных транзакций через
@@ -374,8 +374,7 @@ CI (`.github/workflows/ci.yml`) выполняет fmt + clippy `-D warnings` + 
 - Rate limiter и метрики — в памяти узла (без внешнего хранилища); при
   необходимости горизонтального сбора используйте `/metrics` и внешний сборщик.
 
-Полный перечень находок и план работ — в [`docs/edits/audit/big-bang/`](docs/edits/audit/big-bang/)
-(первичный аудит, все задачи закрыты). Карта документации — [`docs/README.md`](docs/README.md). Профили конфигурации: `dev` (по
+Карта документации — [`docs/README.md`](docs/README.md). Профили конфигурации: `dev` (по
 умолчанию), `stage` (токен ≥16 символов), `prod` (токен ≥32 символов и явный
 `ADVERTISE_ADDR`); при старте конфигурация валидируется и все проблемы выводятся
 одним сообщением.
