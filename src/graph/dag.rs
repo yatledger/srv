@@ -407,9 +407,9 @@ impl<'de> Deserialize<'de> for Dag {
     where
         D: Deserializer<'de>,
     {
-        struct DAGVisitor;
+        struct DagVisitor;
 
-        impl<'de> Visitor<'de> for DAGVisitor {
+        impl<'de> Visitor<'de> for DagVisitor {
             type Value = Dag;
 
             fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
@@ -476,7 +476,7 @@ impl<'de> Deserialize<'de> for Dag {
             }
         }
 
-        deserializer.deserialize_struct("Dag", &["nodes"], DAGVisitor)
+        deserializer.deserialize_struct("Dag", &["nodes"], DagVisitor)
     }
 }
 

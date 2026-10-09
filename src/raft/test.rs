@@ -9,9 +9,9 @@ pub type LogStore = log::LogStore<TypeConfig>;
 use super::store::StateMachineStore;
 use crate::TypeConfig;
 
-struct MemDAGStoreBuilder {}
+struct MemDagStoreBuilder {}
 
-impl StoreBuilder<TypeConfig, LogStore, Arc<StateMachineStore>, ()> for MemDAGStoreBuilder {
+impl StoreBuilder<TypeConfig, LogStore, Arc<StateMachineStore>, ()> for MemDagStoreBuilder {
     async fn build(
         &self,
     ) -> Result<((), LogStore, Arc<StateMachineStore>), StorageError<TypeConfig>> {
@@ -21,6 +21,6 @@ impl StoreBuilder<TypeConfig, LogStore, Arc<StateMachineStore>, ()> for MemDAGSt
 
 #[tokio::test]
 pub async fn test_mem_store() -> Result<(), StorageError<TypeConfig>> {
-    Suite::test_all(MemDAGStoreBuilder {}).await?;
+    Suite::test_all(MemDagStoreBuilder {}).await?;
     Ok(())
 }
