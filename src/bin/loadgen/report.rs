@@ -5,12 +5,14 @@
 //! Throughput/перцентили — **информационные** (без SLA).
 
 use std::collections::BTreeMap;
+use std::io::IsTerminal;
 use std::path::Path;
 
 use serde::Serialize;
 
 use crate::LoadgenConfig;
-use crate::runner::LoadResult;
+use crate::generator::SignedTx;
+use crate::runner::{ClientOutcome, LoadResult};
 
 /// Агрегация отказов по причине.
 #[derive(Serialize, Debug, Clone)]
@@ -250,6 +252,177 @@ pub fn write_json(
     Ok(())
 }
 
+/// Палитра ANSI-цветов для наглядного пофреймового вывода.
+///
+/// Без новых зависимостей: последовательности зашиты строками. `enabled = false`
+/// даёт чистый текст без ESC-последовательностей (не-TTY, `NO_COLOR`, JSON-прогон).
+#[derive(Clone, Debug)]
+pub struct Palette {
+    enabled: bool,
+}
+
+impl Palette {
+    /// Авто-детект: цвета только на TTY и без `NO_COLOR`.
+    pub fn detect() -> Self {
+        let enabled = std::io::stdout().is_terminal() && std::env::var_os("NO_COLOR").is_none();
+        Self { enabled }
+    }
+
+    /// Палитра с явным включением/выключением (для юнит-тестов).
+    #[cfg(test)]
+    pub fn new(enabled: bool) -> Self {
+        Self { enabled }
+    }
+
+    /// Оборачивает текст кодом `code` (например, `"32"`), если цвета включены.
+    fn wrap(&self, code: &str, text: &str) -> String {
+        if self.enabled {
+            format!("\x1b[{code}m{text}\x1b[0m")
+        } else {
+            text.to_string()
+        }
+    }
+
+    /// Приглушённый цвет (рамка, шапка).
+    fn dim(&self, text: &str) -> String {
+        self.wrap("2", text)
+    }
+
+    /// Зелёный (успех).
+    fn green(&self, text: &str) -> String {
+        self.wrap("32", text)
+    }
+
+    /// Красный (отказ).
+    fn red(&self, text: &str) -> String {
+        self.wrap("31", text)
+    }
+}
+
+/// Сокращает длинную строку до `head…tail` (UTF-8-безопасно, по байтам ASCII-хэшей).
+fn shorten(s: &str, head: usize, tail: usize) -> String {
+    let len = s.chars().count();
+    if len <= head + tail + 1 {
+        return s.to_string();
+    }
+    let head_str: String = s.chars().take(head).collect();
+    let tail_str: String = s
+        .chars()
+        .rev()
+        .take(tail)
+        .collect::<Vec<_>>()
+        .into_iter()
+        .rev()
+        .collect();
+    format!("{head_str}…{tail_str}")
+}
+
+/// Строит строку-шапку блока: номер, воркер, `seq`, адрес-отправитель.
+pub fn format_request_header(n: u64, worker: usize, signed: &SignedTx) -> String {
+    format!(
+        "#{n} · worker {worker} · seq {} · addr {}",
+        signed.tx.sequence(),
+        shorten(signed.tx.address().as_str(), 4, 4),
+    )
+}
+
+/// Строит строки запроса: цель, `func`, `prnts`, `var`, `sign`.
+pub fn format_request_lines(signed: &SignedTx, leader: &str) -> Vec<String> {
+    let mut lines = Vec::new();
+    lines.push(format!("→ POST {leader}   func={}", signed.func));
+    let prnts = signed.tx.parents();
+    let short: Vec<String> = prnts.iter().map(|p| shorten(p.as_str(), 3, 3)).collect();
+    lines.push(format!("  prnts[{}] {}", prnts.len(), short.join(", ")));
+
+    let var = signed.tx.var();
+    let to = var["to"]
+        .as_str()
+        .map(|s| shorten(s, 4, 4))
+        .unwrap_or_default();
+    let val = var["val"].as_u64().unwrap_or(0);
+    let msg = var["msg"].as_str().unwrap_or("");
+    let msg_short = shorten(msg, 12, 4);
+    lines.push(format!(
+        "  var {{to: {to}, val: {val}, msg: \"{msg_short}\"}}  sign: {}",
+        shorten(&signed.sign, 3, 3),
+    ));
+    lines
+}
+
+/// Строит строку ответа: статус (+ reason) и задержка клиента в мс.
+pub fn format_response_line(outcome: &ClientOutcome) -> String {
+    let latency = format!("{:.1} ms", outcome.latency_ms);
+    if outcome.transport_error {
+        let reason = outcome.reason.as_deref().unwrap_or("транспортная ошибка");
+        return format!("← транспортная ошибка · {latency} · {reason}");
+    }
+    let phrase = reason_phrase(outcome.status);
+    let status = if phrase.is_empty() {
+        format!("{}", outcome.status)
+    } else {
+        format!("{} {phrase}", outcome.status)
+    };
+    match outcome.reason.as_deref() {
+        Some(reason) => format!("← {status} · {latency} · {reason}"),
+        None => format!("← {status} · {latency}"),
+    }
+}
+
+/// Reason-фраза HTTP-статуса (краткий набор; пусто для неизвестных).
+fn reason_phrase(status: u16) -> &'static str {
+    match status {
+        200 => "OK",
+        400 => "Bad Request",
+        401 => "Unauthorized",
+        403 => "Forbidden",
+        404 => "Not Found",
+        409 => "Conflict",
+        422 => "Unprocessable Entity",
+        429 => "Too Many Requests",
+        500 => "Internal Server Error",
+        503 => "Service Unavailable",
+        _ => "",
+    }
+}
+
+/// Рендерит целый блок «шапка → запрос → ответ» в виде строки (с рамкой и цветами).
+pub fn render_frame(
+    n: u64,
+    worker: usize,
+    signed: &SignedTx,
+    leader: &str,
+    outcome: &ClientOutcome,
+    palette: &Palette,
+) -> String {
+    const WIDTH: usize = 70;
+    let header = format_request_header(n, worker, signed);
+    let top = format!(
+        "┌─ {header} {}",
+        "─".repeat(WIDTH.saturating_sub(header.chars().count() + 4))
+    );
+    let separator_line = "─".repeat(WIDTH);
+    let success = outcome.status == 200 && !outcome.transport_error;
+
+    let mut out = String::new();
+    out.push_str(&palette.dim(&top));
+    out.push('\n');
+    for line in format_request_lines(signed, leader) {
+        out.push_str(&palette.dim(&format!("│ {line}")));
+        out.push('\n');
+    }
+    let response = format_response_line(outcome);
+    let response_colored = if success {
+        palette.green(&format!("│ {response}"))
+    } else {
+        palette.red(&format!("│ {response}"))
+    };
+    out.push_str(&response_colored);
+    out.push('\n');
+    out.push_str(&palette.dim(&format!("└{separator_line}")));
+    out.push('\n');
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -281,6 +454,8 @@ mod tests {
             json_out: None,
             keep_data: false,
             verbose: false,
+            show_tx: false,
+            sleep: None,
         }
     }
 
@@ -326,5 +501,70 @@ mod tests {
         let report = build_report(&cfg(), &load, &[(1, 5), (2, 6)], "redis://x");
         assert!(!report.ok);
         assert!(report.errors.iter().any(|e| e.contains("различается")));
+    }
+
+    fn signed() -> SignedTx {
+        use dagdb::Tx;
+        use dagdb::domain::{Address, Hash};
+        SignedTx {
+            tx: Tx::new(
+                vec![
+                    Hash::from("9c1aaaaaaaaaaaaaaaaaaaaaaaaaaaaa2b"),
+                    Hash::from("4debbbbbbbbbbbbbbbbbbbbbbbbbbb0f7"),
+                ],
+                Address::from("7Qkzzzzzzzzzzzzzzzzzzzzzzzzzzz3fA"),
+                12,
+                serde_json::json!({"to": "Bm8zzzzzzzzzzzzzzzzzzzzzzzzzzqL2", "val": 48215, "msg": "hello"}),
+            ),
+            sign: "3abccccccccccccccccccccccccccccccc9d".to_string(),
+            func: "transferToken".to_string(),
+        }
+    }
+
+    #[test]
+    fn render_frame_contains_key_fields_without_color_when_disabled() {
+        let palette = Palette::new(false);
+        let block = render_frame(
+            12,
+            0,
+            &signed(),
+            "http://127.0.0.1:21001",
+            &outcome(200, 14.7),
+            &palette,
+        );
+        assert!(block.contains("#12"));
+        assert!(block.contains("worker 0"));
+        assert!(block.contains("seq 12"));
+        assert!(block.contains("func=transferToken"));
+        assert!(block.contains("200 OK"));
+        assert!(block.contains("14.7 ms"));
+        assert!(
+            !block.contains('\x1b'),
+            "без цвета ESC-последовательности запрещены"
+        );
+    }
+
+    #[test]
+    fn render_frame_colors_when_enabled() {
+        let palette = Palette::new(true);
+        let ok = render_frame(1, 0, &signed(), "http://x", &outcome(200, 1.0), &palette);
+        assert!(ok.contains("\x1b[32m"), "успех должен быть зелёным");
+        let fail = render_frame(1, 0, &signed(), "http://x", &outcome(400, 1.0), &palette);
+        assert!(fail.contains("\x1b[31m"), "отказ должен быть красным");
+    }
+
+    #[test]
+    fn response_line_shows_reason_for_rejection() {
+        let line = format_response_line(&outcome(400, 3.2));
+        assert!(line.contains("400 Bad Request"));
+        assert!(line.contains("boom"));
+        // Успех — без reason.
+        assert!(!format_response_line(&outcome(200, 3.2)).contains("boom"));
+    }
+
+    #[test]
+    fn shorten_keeps_bounds() {
+        assert_eq!(shorten("abcdefghij", 3, 3), "abc…hij");
+        assert_eq!(shorten("abc", 4, 4), "abc");
     }
 }

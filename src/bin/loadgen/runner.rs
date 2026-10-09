@@ -20,6 +20,23 @@ use dagdb::domain::Hash;
 use crate::cluster::TOKEN;
 use crate::generator::{Generator, GeneratorConfig, SignedTx, choose_parents};
 use crate::prng::Prng;
+use crate::report::{Palette, render_frame};
+
+/// Модель паузы между запросами (ортогональна целевому TPS).
+#[derive(Clone, Debug, PartialEq)]
+pub enum Sleep {
+    /// Пауза отсутствует (максимальная скорость) — `--sleep 0` / без флага.
+    None,
+    /// Фиксированная пауза — `--sleep N>0`.
+    Fixed(Duration),
+    /// Случайная пауза `[min, max]` — демо-режим (без параметров).
+    Jitter {
+        /// Нижняя граница, секунды.
+        min: f64,
+        /// Верхняя граница, секунды.
+        max: f64,
+    },
+}
 
 /// Параметры прогона.
 #[derive(Clone, Debug)]
@@ -32,7 +49,14 @@ pub struct RunConfig {
     pub tx_budget: Option<u64>,
     /// Длительность прогона в секундах (`None` — по бюджету).
     pub duration_sec: Option<u64>,
+    /// Печатать наглядный пофреймовый вывод запроса/ответа.
+    pub show_tx: bool,
+    /// Пауза между запросами.
+    pub sleep: Sleep,
 }
+
+/// Общий мьютекс вывода: один блок печатается атомарно при любой конкурентности.
+static OUTPUT_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 /// Результат одного клиентского запроса.
 #[derive(Clone, Debug)]
@@ -71,6 +95,8 @@ pub async fn run_load(
     let workers = run_cfg.concurrency.max(1).min(generator.account_count());
     let budget = run_cfg.tx_budget;
     let issued = Arc::new(AtomicU64::new(0));
+    let frame = Arc::new(AtomicU64::new(0));
+    let palette = Palette::detect();
     let deadline = run_cfg
         .duration_sec
         .map(|secs| Instant::now() + Duration::from_secs(secs));
@@ -80,12 +106,14 @@ pub async fn run_load(
     for worker_id in 0..workers {
         let generator = Arc::clone(&generator);
         let issued = Arc::clone(&issued);
+        let frame = Arc::clone(&frame);
         let leader = leader.clone();
         let run_cfg = run_cfg.clone();
+        let palette = palette.clone();
         handles.push(tokio::spawn(async move {
             worker_loop(
                 worker_id, workers, &generator, &leader, &run_cfg, budget, deadline, &issued,
-                verbose,
+                &frame, &palette, verbose,
             )
             .await
         }));
@@ -114,6 +142,8 @@ async fn worker_loop(
     budget: Option<u64>,
     deadline: Option<Instant>,
     issued: &AtomicU64,
+    frame: &AtomicU64,
+    palette: &Palette,
     verbose: bool,
 ) -> Vec<ClientOutcome> {
     let client = reqwest::Client::builder()
@@ -121,6 +151,9 @@ async fn worker_loop(
         .build()
         .expect("sender reqwest client");
     let mut rng = Prng::new(run_cfg_seed(worker_id));
+    // Пауза разыгрывается **отдельным** ГПСЧ, чтобы не сдвигать поток параметров
+    // транзакций (детерминизм при одном `--seed`).
+    let mut sleep_rng = Prng::new(sleep_seed(worker_id));
 
     // Аккаунты потока — непрерывный блок без пересечения с другими задачами.
     let (account_start, account_len) = account_block(worker_id, workers, generator.account_count());
@@ -157,7 +190,7 @@ async fn worker_loop(
             break;
         }
 
-        // Пейсинг.
+        // Пейсинг по целевому TPS.
         if let Some(interval) = interval {
             let now = Instant::now();
             if next_slot > now {
@@ -165,6 +198,9 @@ async fn worker_loop(
             }
             next_slot += interval;
         }
+
+        // Пауза `--sleep` (ортогональна TPS; сюда же попадает демо-джиттер).
+        sleep_between(&run_cfg.sleep, &mut sleep_rng).await;
 
         // Обновляем пул живых узлов, чтобы нагрузка шла и на новые транзакции.
         since_pool_refresh += 1;
@@ -191,10 +227,30 @@ async fn worker_loop(
             generator.build(index, &parents, &mut rng)
         };
         let outcome = send_with_retry(&client, leader, &signed, verbose).await;
+        if run_cfg.show_tx {
+            let n = frame.fetch_add(1, Ordering::Relaxed) + 1;
+            // Блок печатается под общим мьютексом — при `concurrency > 1` строки
+            // разных транзакций не перемешиваются (R6).
+            let block = render_frame(n, worker_id, &signed, leader, &outcome, palette);
+            let _guard = OUTPUT_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+            print!("{block}");
+        }
         outcomes.push(outcome);
     }
 
     outcomes
+}
+
+/// Выдерживает паузу `sleep` (фиксированную, случайную или отсутствующую).
+async fn sleep_between(sleep: &Sleep, rng: &mut Prng) {
+    match sleep {
+        Sleep::None => {}
+        Sleep::Fixed(d) => tokio::time::sleep(*d).await,
+        Sleep::Jitter { min, max } => {
+            let secs = rng.range_f64(*min, *max);
+            tokio::time::sleep(Duration::from_secs_f64(secs)).await;
+        }
+    }
 }
 
 /// Непрерывный блок аккаунтов `[start, start+len)` для задачи `worker_id`.
@@ -217,6 +273,13 @@ fn account_block(worker_id: usize, workers: usize, accounts: usize) -> (usize, u
 /// Seed ГПСЧ выбора родителей для задачи.
 fn run_cfg_seed(worker_id: usize) -> u64 {
     (worker_id as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15) ^ 0xD1B5_4A32_D192_ED03
+}
+
+/// Seed **отдельного** ГПСЧ паузы (не влияет на поток параметров транзакций).
+fn sleep_seed(worker_id: usize) -> u64 {
+    (worker_id as u64)
+        .wrapping_mul(0x9E37_79B9_7F4A_7C15)
+        .wrapping_add(0xA5A5_5A5A_1234_5678)
 }
 
 /// Отправляет транзакцию лидеру с ретраями на временные сбои (503/сеть).

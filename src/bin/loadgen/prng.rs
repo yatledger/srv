@@ -53,6 +53,19 @@ impl Prng {
     pub fn next_u8(&mut self) -> u8 {
         (self.next_u64() >> 56) as u8
     }
+
+    /// Случайное `f64` в диапазоне `[low, high)` (равномерно по 53 битам мантиссы).
+    ///
+    /// При `high <= low` возвращает `low`. Используется для случайной паузы
+    /// демо-режима; розыгрыш идёт **отдельным** ГПСЧ и не сдвигает поток
+    /// параметров транзакций.
+    pub fn range_f64(&mut self, low: f64, high: f64) -> f64 {
+        if high <= low {
+            return low;
+        }
+        let unit = (self.next_u64() >> 11) as f64 / (1u64 << 53) as f64;
+        low + unit * (high - low)
+    }
 }
 
 #[cfg(test)]
@@ -92,5 +105,21 @@ mod tests {
         }
         assert_eq!(p.below(0), 0);
         assert_eq!(p.range_inclusive(3, 3), 3);
+    }
+
+    #[test]
+    fn range_f64_is_bounded_and_deterministic() {
+        let mut p = Prng::new(11);
+        for _ in 0..1000 {
+            let v = p.range_f64(0.1, 2.5);
+            assert!((0.1..2.5).contains(&v), "вне диапазона: {v}");
+        }
+        // Вырожденный диапазон возвращает границу.
+        assert_eq!(p.range_f64(1.5, 1.5), 1.5);
+        assert_eq!(p.range_f64(2.0, 1.0), 2.0);
+        // Детерминизм при одном seed.
+        let mut a = Prng::new(99);
+        let mut b = Prng::new(99);
+        assert_eq!(a.range_f64(0.1, 2.5), b.range_f64(0.1, 2.5));
     }
 }

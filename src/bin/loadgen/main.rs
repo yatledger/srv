@@ -16,8 +16,18 @@ mod report;
 mod runner;
 
 use std::process::ExitCode;
+use std::time::Duration;
 
 use clap::Parser;
+
+use runner::{RunConfig, Sleep};
+
+/// Нижняя граница случайной паузы демо-режима (секунды).
+const DEMO_SLEEP_MIN: f64 = 0.1;
+/// Верхняя граница случайной паузы демо-режима (секунды).
+const DEMO_SLEEP_MAX: f64 = 2.5;
+/// Длительность демо-прогона без параметров (секунды).
+const DEMO_DURATION_SEC: u64 = 60;
 
 /// Параметры запуска нагрузочного генератора.
 #[derive(Parser, Clone, Debug)]
@@ -71,6 +81,16 @@ struct LoadgenConfig {
     /// Подробное логирование (debug-уровень).
     #[arg(long, default_value_t = false)]
     verbose: bool,
+
+    /// Наглядный пофреймовый вывод запроса и ответа (в демо-режиме включён).
+    #[arg(long, default_value_t = false)]
+    show_tx: bool,
+
+    /// Фиксированная пауза между запросами в секундах (`0` — без паузы).
+    ///
+    /// В демо-режиме (без аргументов) пауза случайна (`0.1..2.5` с).
+    #[arg(long, value_name = "SECS", value_parser = parse_sleep_secs)]
+    sleep: Option<f64>,
 }
 
 impl LoadgenConfig {
@@ -88,6 +108,64 @@ impl LoadgenConfig {
     fn redis_url(&self) -> String {
         std::env::var("REDIS_URL").unwrap_or_else(|_| "redis://127.0.0.1:6379/0".to_string())
     }
+
+    /// Демо-режим: процесс запущен **без аргументов** (`argv.len() == 1`).
+    fn is_demo(&self) -> bool {
+        std::env::args_os().len() == 1
+    }
+
+    /// Параметры прогона с учётом демо-режима (см. [`resolve`](Self::resolve)).
+    fn run_config(&self) -> RunConfig {
+        self.resolve(self.is_demo())
+    }
+
+    /// Резолвит фактические параметры прогона.
+    ///
+    /// В демо-режиме (`demo = true`, запуск без аргументов) включаются наглядный
+    /// вывод, случайная пауза `0.1..2.5` с, TPS выключается, конкурентность
+    /// сбрасывается в `1`, а бюджет задаётся длительностью [`DEMO_DURATION_SEC`].
+    /// Иначе действуют явные флаги и обычные дефолты. Вынесено в чистую функцию
+    /// от `demo`, чтобы юнит-тесты не зависели от аргументов процесса.
+    pub(crate) fn resolve(&self, demo: bool) -> RunConfig {
+        if demo {
+            return RunConfig {
+                tps: 0,
+                concurrency: 1,
+                tx_budget: None,
+                duration_sec: Some(DEMO_DURATION_SEC),
+                show_tx: true,
+                sleep: Sleep::Jitter {
+                    min: DEMO_SLEEP_MIN,
+                    max: DEMO_SLEEP_MAX,
+                },
+            };
+        }
+        let sleep = match self.sleep {
+            Some(secs) if secs > 0.0 => Sleep::Fixed(Duration::from_secs_f64(secs)),
+            _ => Sleep::None,
+        };
+        RunConfig {
+            tps: self.tps,
+            concurrency: self.concurrency,
+            tx_budget: self.tx_budget(),
+            duration_sec: self.duration_sec,
+            show_tx: self.show_tx,
+            sleep,
+        }
+    }
+}
+
+/// Парсер `--sleep <SECS>`: неотрицательное конечное число секунд.
+fn parse_sleep_secs(raw: &str) -> Result<f64, String> {
+    let secs: f64 = raw
+        .parse()
+        .map_err(|_| format!("ожидается число секунд, получено «{raw}»"))?;
+    if !secs.is_finite() || secs < 0.0 {
+        return Err(format!(
+            "пауза должна быть неотрицательным числом секунд, получено «{raw}»"
+        ));
+    }
+    Ok(secs)
 }
 
 #[tokio::main]
@@ -125,12 +203,7 @@ async fn run(cfg: LoadgenConfig) -> Result<bool, Box<dyn std::error::Error + Sen
         accounts: cfg.accounts,
         parents: cfg.parents,
     };
-    let run_cfg = runner::RunConfig {
-        tps: cfg.tps,
-        concurrency: cfg.concurrency,
-        tx_budget: cfg.tx_budget(),
-        duration_sec: cfg.duration_sec,
-    };
+    let run_cfg = cfg.run_config();
     let nodes = cluster.nodes_for_load();
     let load = runner::run_load(&nodes, &gen_cfg, &run_cfg, cfg.verbose).await?;
 
@@ -146,4 +219,82 @@ async fn run(cfg: LoadgenConfig) -> Result<bool, Box<dyn std::error::Error + Sen
 
     cluster.shutdown().await;
     Ok(report.ok)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Конфиг с обычными дефолтами (`--show-tx`/`--sleep` не заданы).
+    fn base() -> LoadgenConfig {
+        LoadgenConfig {
+            nodes: 3,
+            tx: None,
+            duration_sec: None,
+            tps: 500,
+            concurrency: 8,
+            accounts: 16,
+            parents: 2,
+            seed: 1,
+            json_out: None,
+            keep_data: false,
+            verbose: false,
+            show_tx: false,
+            sleep: None,
+        }
+    }
+
+    #[test]
+    fn demo_resolves_to_live_slow_single_worker() {
+        let rc = base().resolve(true);
+        assert!(rc.show_tx, "демо включает наглядный вывод");
+        assert_eq!(rc.tps, 0, "в демо TPS выключен");
+        assert_eq!(rc.concurrency, 1, "демо — один воркер");
+        assert_eq!(rc.tx_budget, None);
+        assert_eq!(rc.duration_sec, Some(DEMO_DURATION_SEC));
+        match rc.sleep {
+            Sleep::Jitter { min, max } => {
+                assert_eq!((min, max), (DEMO_SLEEP_MIN, DEMO_SLEEP_MAX));
+            }
+            other => panic!("ожидался Jitter, получено {other:?}"),
+        }
+    }
+
+    #[test]
+    fn explicit_args_disable_demo_defaults() {
+        let mut cfg = base();
+        cfg.show_tx = true;
+        let rc = cfg.resolve(false);
+        assert!(rc.show_tx);
+        assert_eq!(rc.tps, 500);
+        assert_eq!(rc.concurrency, 8);
+        assert_eq!(rc.tx_budget, Some(500));
+        assert_eq!(rc.duration_sec, None);
+        assert!(matches!(rc.sleep, Sleep::None));
+    }
+
+    #[test]
+    fn sleep_zero_disables_pause_and_positive_is_fixed() {
+        let mut cfg = base();
+        cfg.sleep = Some(0.0);
+        assert!(matches!(cfg.resolve(false).sleep, Sleep::None));
+
+        cfg.sleep = Some(1.5);
+        match cfg.resolve(false).sleep {
+            Sleep::Fixed(d) => {
+                assert!((d.as_secs_f64() - 1.5).abs() < 1e-9);
+            }
+            other => panic!("ожидался Fixed, получено {other:?}"),
+        }
+    }
+
+    #[test]
+    fn sleep_parser_rejects_negative_and_nan() {
+        assert_eq!(parse_sleep_secs("0").unwrap(), 0.0);
+        assert_eq!(parse_sleep_secs("2.5").unwrap(), 2.5);
+        assert!(parse_sleep_secs("-1").is_err());
+        assert!(parse_sleep_secs("NaN").is_err());
+        assert!(parse_sleep_secs("inf").is_err());
+        assert!(parse_sleep_secs("abc").is_err());
+    }
 }
