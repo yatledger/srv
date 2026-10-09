@@ -222,44 +222,59 @@ async fn add_handler(
     }
 }
 
-async fn pool_handler(State(app): State<App>) -> (StatusCode, Json<PoolResponse>) {
+/// Параметры пагинации для публичных ручек.
+#[derive(Deserialize)]
+struct PageParams {
+    limit: Option<usize>,
+    offset: Option<usize>,
+}
+
+impl PageParams {
+    /// `(offset, limit)` с ограничением максимального размера страницы.
+    fn resolve(&self) -> (usize, usize) {
+        const DEFAULT_LIMIT: usize = 100;
+        const MAX_LIMIT: usize = 1000;
+        let offset = self.offset.unwrap_or(0);
+        let limit = self.limit.unwrap_or(DEFAULT_LIMIT).min(MAX_LIMIT);
+        (offset, limit)
+    }
+}
+
+async fn pool_handler(
+    State(app): State<App>,
+    axum::extract::Query(page): axum::extract::Query<PageParams>,
+) -> (StatusCode, Json<PoolResponse>) {
+    let (offset, limit) = page.resolve();
     let state_machine = app.state_machine.state_machine.read().await;
 
-    // Получаем список смежности родителей через метод get_parents
-    let parents_map = state_machine.dag.get_parents();
-    // Собираем узлы и подсчитываем количество активных родителей для каждого
-    let mut nodes = state_machine
+    // Считаем число активных родителей напрямую, без построения полной карты
+    // смежности `get_parents()` для всего графа.
+    let mut nodes: Vec<(Arc<str>, usize)> = state_machine
         .dag
-        .get_node_keys()
+        .get_nodes()
+        .iter()
+        .map(|(node, data)| (node.clone(), data.parents.len()))
+        .collect();
+    // Сортируем по возрастанию числа активных родителей (меньше — выше приоритет),
+    // при равенстве — стабильно по хэшу.
+    nodes.sort_by(|a, b| a.1.cmp(&b.1).then_with(|| a.0.cmp(&b.0)));
+
+    let total = nodes.len();
+    let nodes: Vec<String> = nodes
         .into_iter()
-        .map(|node| {
-            let active_parents = parents_map
-                .get(&node)
-                .map(|parents| parents.len())
-                .unwrap_or(0);
-            (node, active_parents)
-        })
-        .collect::<Vec<_>>();
-    // Сортируем по возрастанию числа активных родителей (меньше родителей — выше приоритет)
-    nodes.sort_by(|a, b| a.1.cmp(&b.1));
-    // Преобразуем в Vec<String> для ответа
-    let mut nodes: Vec<String> = nodes
-        .into_iter()
+        .skip(offset)
+        .take(limit)
         .map(|(node, _)| String::from(&*node))
         .collect();
-
-    if nodes.len() > 10 {
-        let target_len = (nodes.len() as f64).sqrt().ceil() as usize;
-        nodes.truncate(target_len);
-    } else {
-        nodes.truncate(2);
-    }
 
     (
         StatusCode::OK,
         Json(PoolResponse {
             status: "success".to_string(),
             nodes,
+            total,
+            offset,
+            limit,
             message: None,
         }),
     )
@@ -314,14 +329,25 @@ async fn remove_heavy_nodes_handler(
     }
 }
 
-async fn get_full_graph_handler(State(app): State<App>) -> (StatusCode, Json<FullGraphResponse>) {
+async fn get_full_graph_handler(
+    State(app): State<App>,
+    axum::extract::Query(page): axum::extract::Query<PageParams>,
+) -> (StatusCode, Json<FullGraphResponse>) {
+    let (offset, limit) = page.resolve();
     let state_machine = app.state_machine.state_machine.read().await;
-    let nodes = state_machine.dag.get_nodes_by_depth();
+    let mut nodes = state_machine.dag.get_nodes_by_depth();
+    let total = nodes.len();
+    // Пагинация уже отсортированного результата (узлы упорядочены по глубине).
+    nodes = nodes.into_iter().skip(offset).take(limit).collect();
+
     (
         StatusCode::OK,
         Json(FullGraphResponse {
             status: "success".to_string(),
             nodes,
+            total,
+            offset,
+            limit,
             message: None,
         }),
     )
@@ -427,6 +453,10 @@ pub async fn load_genesis(
 struct PoolResponse {
     status: String,
     nodes: Vec<String>,
+    /// Общее число узлов до пагинации.
+    total: usize,
+    offset: usize,
+    limit: usize,
     message: Option<String>,
 }
 
@@ -434,7 +464,40 @@ struct PoolResponse {
 struct FullGraphResponse {
     status: String,
     nodes: Vec<NodeDepth>,
+    /// Общее число узлов до пагинации.
+    total: usize,
+    offset: usize,
+    limit: usize,
     message: Option<String>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn page_params_defaults() {
+        let p = PageParams {
+            limit: None,
+            offset: None,
+        };
+        assert_eq!(p.resolve(), (0, 100));
+    }
+
+    #[test]
+    fn page_params_caps_limit_and_uses_offset() {
+        let p = PageParams {
+            limit: Some(10_000),
+            offset: Some(5),
+        };
+        assert_eq!(p.resolve(), (5, 1000));
+
+        let p = PageParams {
+            limit: Some(20),
+            offset: Some(40),
+        };
+        assert_eq!(p.resolve(), (40, 20));
+    }
 }
 
 /// Запрос на архивацию и удаление «тяжёлых» узлов.
