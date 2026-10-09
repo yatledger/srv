@@ -1,51 +1,104 @@
 use std::collections::HashSet;
 use std::sync::Arc;
-//use ed25519_dalek::VerifyingKey;
-//use base58::FromBase58;
-use crate::Tx;
+
 use blake3::Hash;
-use itertools::Itertools;
 use serde_json::{Value, to_value};
 
-// Преобразует Tx в строку: сериализует в JSON, сортирует ключи, объединяет значения
-pub fn ordered_sum(tx: &Tx) -> Result<Hash, String> {
-    // Сериализуем Tx в JSON-объект
-    let value = to_value(tx).map_err(|e| format!("Serialization error: {}", e))?;
-    let map = value.as_object().ok_or("Tx must serialize to an object")?;
+use crate::Tx;
 
-    // Собираем значения в отсортированном порядке ключей
-    let mut result = String::new();
-    for key in map.keys().sorted() {
-        let value = map.get(key).unwrap();
-        result.push_str(&process_value(value)?);
+/// Допустимые значения поля `func`.
+///
+/// `func` участвует в подписываемом/хэшируемом контенте, поэтому список известных
+/// значений должен быть одинаковым на всех репликах (детерминизм state machine).
+pub const KNOWN_FUNCS: &[&str] = &["transferToken"];
+
+/// Проверяет, что `func` входит в список известных функций.
+pub fn validate_func(func: &str) -> Result<(), String> {
+    if KNOWN_FUNCS.contains(&func) {
+        Ok(())
+    } else {
+        Err(format!("unknown func: {func}"))
     }
-
-    Ok(blake3::hash(result.as_bytes()))
 }
 
-fn process_value(value: &Value) -> Result<String, String> {
+/// Вычисляет хэш подписываемого контента транзакции.
+///
+/// В контент входят все поля `Tx` **и** `func`. Для устранения неоднозначностей
+/// (склейка значений без разделителей) используется каноничная JSON-сериализация
+/// с рекурсивно отсортированными ключами объектов; порядок элементов массивов
+/// сохраняется. Одинаковый контент всегда даёт одинаковый хэш на всех узлах.
+pub fn ordered_sum(tx: &Tx, func: &str) -> Result<Hash, String> {
+    // `to_value` даёт детерминированную структуру JSON для сериализуемых полей `Tx`.
+    let mut value = to_value(tx).map_err(|e| format!("Serialization error: {e}"))?;
+    {
+        let obj = value
+            .as_object_mut()
+            .ok_or("Tx must serialize to an object")?;
+        // `func` обязан входить в подписываемый контент.
+        obj.insert("func".to_string(), Value::String(func.to_string()));
+    }
+
+    let canonical = canonical_json(&value);
+    Ok(blake3::hash(canonical.as_bytes()))
+}
+
+/// Каноничная JSON-сериализация: ключи всех объектов сортируются, строки
+/// экранируются, вложенность сохраняется. Результат полностью детерминирован.
+fn canonical_json(value: &Value) -> String {
+    let mut out = String::new();
+    write_canonical(value, &mut out);
+    out
+}
+
+fn write_canonical(value: &Value, out: &mut String) {
     match value {
-        Value::String(s) => Ok(s.clone()),
-        Value::Number(n) => Ok(n.to_string()),
-        Value::Array(arr) => Ok(arr.iter().filter_map(|v| v.as_str()).collect::<String>()),
-        Value::Object(obj) => {
-            // Рекурсивно обрабатываем объект (например, "var")
-            let mut obj_result = String::new();
-            for obj_key in obj.keys().sorted() {
-                let obj_value = obj.get(obj_key).unwrap();
-                obj_result.push_str(&process_value(obj_value)?);
+        Value::Null => out.push_str("null"),
+        Value::Bool(b) => out.push_str(if *b { "true" } else { "false" }),
+        Value::Number(n) => out.push_str(&n.to_string()),
+        Value::String(s) => write_json_string(s, out),
+        Value::Array(arr) => {
+            out.push('[');
+            for (i, item) in arr.iter().enumerate() {
+                if i > 0 {
+                    out.push(',');
+                }
+                write_canonical(item, out);
             }
-            Ok(obj_result)
+            out.push(']');
         }
-        Value::Null => Ok(String::new()),
-        Value::Bool(b) => Ok(b.to_string()),
+        Value::Object(map) => {
+            out.push('{');
+            let mut keys: Vec<&String> = map.keys().collect();
+            keys.sort();
+            for (i, key) in keys.into_iter().enumerate() {
+                if i > 0 {
+                    out.push(',');
+                }
+                write_json_string(key, out);
+                out.push(':');
+                // Ключ гарантированно присутствует.
+                if let Some(item) = map.get(key) {
+                    write_canonical(item, out);
+                }
+            }
+            out.push('}');
+        }
     }
 }
 
-pub fn validate_parents(parents: &Vec<Arc<str>>) -> Result<(), String> {
+/// Записывает строку в JSON-виде (экранирование как в serde_json).
+fn write_json_string(s: &str, out: &mut String) {
+    // `to_string` для строки не может завершиться ошибкой.
+    if let Ok(escaped) = serde_json::to_string(s) {
+        out.push_str(&escaped);
+    }
+}
+
+/// Проверяет корректность списка родителей: длина, непустые и уникальные значения.
+pub fn validate_parents(parents: &[Arc<str>]) -> Result<(), String> {
     // Check length constraints
     if parents.len() < 2 || parents.len() > 100 {
-        return Err("parents must have between 2 and 25 elements".to_string());
+        return Err("parents must have between 2 and 100 elements".to_string());
     }
     // Check for non-empty strings
     if parents.iter().any(|s| s.trim().is_empty()) {
@@ -58,31 +111,95 @@ pub fn validate_parents(parents: &Vec<Arc<str>>) -> Result<(), String> {
     Ok(())
 }
 
-/*
-pub fn validate_tx_data(data: &Tx) -> Result<(), String> {
-    // debit must be a valid Ed25519 public key
-    let debit_bytes = data.debit.from_base58().map_err(|_| "invalid base58 for debit")?;
-    if debit_bytes.len() != 32 {
-        return Err("debit must be 32 bytes".to_string());
-    }
-    let debit_array: [u8; 32] = debit_bytes
-        .try_into()
-        .map_err(|_| "invalid Ed25519 key length")?;
-    let _ = VerifyingKey::from_bytes(&debit_array).map_err(|_| "invalid Ed25519 public key")?;
-    // debit must not equal credit
-    if data.debit == data.credit {
-        return Err("debit must not be equal to credit".to_string());
-    }
-    // amount must be positive
-    if data.amount == 0 {
-        return Err("amount must be greater than 0".to_string());
-    }
-    // msg, if present, must not exceed 2500 characters
-    if let Some(msg) = &data.msg {
-        if msg.len() > 2500 {
-            return Err("msg must not exceed 2500 characters".to_string());
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    fn tx_with_var(var: Value) -> Tx {
+        Tx {
+            prnts: vec![Arc::from("parent-a"), Arc::from("parent-b")],
+            addr: Arc::from("addr"),
+            seq: 1,
+            var,
         }
     }
-    Ok(())
+
+    #[test]
+    fn ordered_sum_is_deterministic() {
+        let tx = tx_with_var(json!({ "ca": "a", "to": "b", "val": 5 }));
+        let first = ordered_sum(&tx, "transferToken").unwrap();
+        let second = ordered_sum(&tx, "transferToken").unwrap();
+        assert_eq!(first, second);
+    }
+
+    #[test]
+    fn ordered_sum_changes_when_func_changes() {
+        let tx = tx_with_var(json!({ "ca": "a", "to": "b", "val": 5 }));
+        let left = ordered_sum(&tx, "transferToken").unwrap();
+        let right = ordered_sum(&tx, "otherFunc").unwrap();
+        assert_ne!(left, right, "подмена func должна менять хэш");
+    }
+
+    #[test]
+    fn ordered_sum_has_no_concatenation_collision() {
+        // При старой склейке значений без разделителей оба варианта давали "abc".
+        let left = tx_with_var(json!({ "ca": "a", "to": "bc" }));
+        let right = tx_with_var(json!({ "ca": "ab", "to": "c" }));
+        let left_hash = ordered_sum(&left, "transferToken").unwrap();
+        let right_hash = ordered_sum(&right, "transferToken").unwrap();
+        assert_ne!(left_hash, right_hash, "неоднозначная склейка недопустима");
+    }
+
+    #[test]
+    fn ordered_sum_covers_all_tx_fields() {
+        let base = tx_with_var(json!({ "ca": "a", "to": "b", "val": 5 }));
+        let mut changed = base.clone();
+        changed.seq = 2;
+        assert_ne!(
+            ordered_sum(&base, "transferToken").unwrap(),
+            ordered_sum(&changed, "transferToken").unwrap()
+        );
+
+        let mut changed = base.clone();
+        changed.addr = Arc::from("other-addr");
+        assert_ne!(
+            ordered_sum(&base, "transferToken").unwrap(),
+            ordered_sum(&changed, "transferToken").unwrap()
+        );
+
+        let mut changed = base.clone();
+        changed.prnts = vec![Arc::from("parent-a"), Arc::from("parent-c")];
+        assert_ne!(
+            ordered_sum(&base, "transferToken").unwrap(),
+            ordered_sum(&changed, "transferToken").unwrap()
+        );
+    }
+
+    #[test]
+    fn validate_func_rejects_unknown() {
+        assert!(validate_func("transferToken").is_ok());
+        assert!(validate_func("totallyUnknown").is_err());
+    }
+
+    #[test]
+    fn validate_parents_accepts_valid() {
+        let parents = vec![Arc::from("a"), Arc::from("b")];
+        assert!(validate_parents(&parents).is_ok());
+    }
+
+    #[test]
+    fn validate_parents_rejects_too_few_and_too_many() {
+        assert!(validate_parents(&[Arc::from("a")]).is_err());
+        let many: Vec<Arc<str>> = (0..101)
+            .map(|i| Arc::from(i.to_string().as_str()))
+            .collect();
+        assert!(validate_parents(&many).is_err());
+    }
+
+    #[test]
+    fn validate_parents_rejects_empty_and_duplicates() {
+        assert!(validate_parents(&[Arc::from(""), Arc::from("b")]).is_err());
+        assert!(validate_parents(&[Arc::from("a"), Arc::from("a")]).is_err());
+    }
 }
-*/

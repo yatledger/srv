@@ -42,6 +42,24 @@ pub struct TxVar {
     msg: Option<String>,
 }
 
+impl TxVar {
+    /// Проверяет структуру `var` детерминированно (без сети/времени).
+    pub fn validate(&self) -> Result<(), String> {
+        if self.ca.trim().is_empty() {
+            return Err("var.ca must not be empty".to_string());
+        }
+        if self.to.trim().is_empty() {
+            return Err("var.to must not be empty".to_string());
+        }
+        if let Some(msg) = &self.msg {
+            if msg.len() > 2500 {
+                return Err("var.msg must not exceed 2500 characters".to_string());
+            }
+        }
+        Ok(())
+    }
+}
+
 pub fn extract_from_var_struct(tx: &Tx) -> Result<TxVar, String> {
     // Десериализуем `var` в структуру `TxData`
     serde_json::from_value(tx.var.clone()).map_err(|e| format!("Failed to deserialize var: {}", e))
@@ -63,8 +81,8 @@ impl DAG {
         func: String,
     ) -> Result<(), String> {
         let (ca, to, val, msg) = if func == "transferToken" {
-            // .unwrap() здесь безопасен, если мы доверяем валидации на входе
-            let TxVar { ca, to, val, msg } = extract_from_var_struct(&tx).unwrap();
+            // Ошибка извлечения `var` не должна ронять узел — возвращаем её как Result.
+            let TxVar { ca, to, val, msg } = extract_from_var_struct(&tx)?;
             (Some(ca), Some(to), Some(val), Some(msg))
         } else {
             (None, None, None, None)
@@ -411,5 +429,64 @@ impl<'de> Deserialize<'de> for DAG {
 impl Default for DAG {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn tx_var(value: serde_json::Value) -> TxVar {
+        serde_json::from_value(value).expect("valid TxVar")
+    }
+
+    #[test]
+    fn tx_var_validate_accepts_well_formed() {
+        let var = tx_var(json!({ "ca": "a", "to": "b", "val": 1, "msg": "ok" }));
+        assert!(var.validate().is_ok());
+    }
+
+    #[test]
+    fn tx_var_validate_rejects_empty_fields() {
+        let var = tx_var(json!({ "ca": "", "to": "b", "val": 1 }));
+        assert!(var.validate().is_err());
+
+        let var = tx_var(json!({ "ca": "a", "to": "  ", "val": 1 }));
+        assert!(var.validate().is_err());
+    }
+
+    #[test]
+    fn tx_var_validate_rejects_long_msg() {
+        let long = "x".repeat(2501);
+        let var = tx_var(json!({ "ca": "a", "to": "b", "val": 1, "msg": long }));
+        assert!(var.validate().is_err());
+    }
+
+    #[test]
+    fn tx_var_validate_rejects_wrong_val_type() {
+        // val должен быть целым числом — структура var невалидна.
+        let result: Result<TxVar, _> =
+            serde_json::from_value(json!({ "ca": "a", "to": "b", "val": "not-a-number" }));
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn add_node_with_parents_does_not_panic_on_bad_var() {
+        let mut dag = DAG::new();
+        let tx = Tx {
+            prnts: vec![],
+            addr: Arc::from("addr"),
+            seq: 0,
+            // var не соответствует TxVar: функция transferToken ожидает структуру.
+            var: json!({ "unexpected": true }),
+        };
+        let result = dag.add_node_with_parents(
+            Arc::from("hash"),
+            tx,
+            String::new(),
+            "transferToken".to_string(),
+        );
+        assert!(result.is_err(), "вредоносный var не должен паниковать");
+        assert_eq!(dag.get_node_count(), 0);
     }
 }

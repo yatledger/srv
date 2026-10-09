@@ -21,6 +21,7 @@ use crate::utils::*;
 use raft::api::*;
 use raft::command::Request;
 
+use crate::graph::dag::extract_from_var_struct;
 use crate::graph::weights::NodeDepth;
 use crate::web::ApiResponse;
 
@@ -49,8 +50,35 @@ async fn validate_and_prepare_tx(
         ));
     }
 
+    // Проверка допустимости функции: func входит в подписываемый контент.
+    if let Err(err) = validate_func(&payload.func) {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(ApiResponse::Error {
+                status: "error".to_string(),
+                message: err,
+            }),
+        ));
+    }
+
+    // Структура var валидируется до попадания в state machine (client_write).
+    if payload.func == "transferToken" {
+        match extract_from_var_struct(&payload.tx).and_then(|var| var.validate()) {
+            Ok(()) => {}
+            Err(err) => {
+                return Err((
+                    StatusCode::BAD_REQUEST,
+                    Json(ApiResponse::Error {
+                        status: "error".to_string(),
+                        message: err,
+                    }),
+                ));
+            }
+        }
+    }
+
     // Проверка подписи и вычисление хэша
-    let tx_hash_bytes = match ordered_sum(&payload.tx) {
+    let tx_hash_bytes = match ordered_sum(&payload.tx, &payload.func) {
         Ok(bytes) => bytes,
         Err(e) => {
             return Err((
