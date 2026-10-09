@@ -102,17 +102,21 @@ pub async fn metrics(State(app): State<App>) -> Result<Json<impl serde::Serializ
 pub async fn vote(
     State(app): State<App>,
     Json(req): Json<VoteRequest>,
-) -> Result<Json<impl serde::Serialize>, StatusCode> {
-    let res = app.raft.vote(req).await;
-    Ok(Json(res))
+) -> Result<Json<impl serde::Serialize>, (StatusCode, String)> {
+    app.raft.vote(req).await.map(Json).map_err(|e| {
+        error!("vote request failed: {}", e);
+        (StatusCode::INTERNAL_SERVER_ERROR, e.to_string())
+    })
 }
 
 pub async fn append(
     State(app): State<App>,
     Json(req): Json<AppendEntriesRequest>,
-) -> Result<Json<impl serde::Serialize>, StatusCode> {
-    let res = app.raft.append_entries(req).await;
-    Ok(Json(res))
+) -> Result<Json<impl serde::Serialize>, (StatusCode, String)> {
+    app.raft.append_entries(req).await.map(Json).map_err(|e| {
+        error!("append_entries request failed: {}", e);
+        (StatusCode::INTERNAL_SERVER_ERROR, e.to_string())
+    })
 }
 
 pub async fn snapshot(

@@ -1,4 +1,9 @@
-// src/web.rs
+//! Единый внутрикластерный HTTP-клиент и разбор ответов приложения.
+//!
+//! `HttpClient` инкапсулирует один `reqwest::Client`, кластерный токен и общую
+//! обработку ошибок. На его основе построены оба роутера: `Router` (публичный
+//! контракт `ApiResponse<T>` для `/add`, `/remove_heavy_nodes`) и
+//! `raft::router::Router` (контракт Raft RPC).
 
 use axum::http::StatusCode;
 use reqwest::Client;
@@ -15,7 +20,7 @@ pub enum ApiResponse<T> {
     Error { status: String, message: String },
 }
 
-/// Универсальный тип ошибки для ApiRouter, описывающий все возможные проблемы.
+/// Универсальный тип ошибки для внутрикластерных HTTP-вызовов.
 #[derive(Debug, thiserror::Error)]
 pub enum ApiRouterError {
     #[error("network error: {0}")]
@@ -40,29 +45,70 @@ impl From<serde_json::Error> for ApiRouterError {
     }
 }
 
-/// Новый роутер, предназначенный ИСКЛЮЧИТЕЛЬНО для внутрикластерных API-запросов.
+/// Единый внутрикластерный HTTP-клиент: общий `reqwest::Client` и токен.
 #[derive(Debug, Clone)]
-pub struct Router {
+pub struct HttpClient {
     client: Client,
-    /// Кластерный токен, добавляемый к внутренним запросам.
     internal_token: String,
 }
 
-impl Router {
+impl HttpClient {
     pub fn new(timeout: Duration, connect_timeout: Duration, internal_token: String) -> Self {
         // `build` может упасть только при инициализации TLS-бэкенда; не паникуем,
         // а откатываемся на клиент по умолчанию.
         let client = Client::builder()
             .timeout(timeout)
             .connect_timeout(connect_timeout)
+            .pool_idle_timeout(Duration::from_secs(45))
+            .pool_max_idle_per_host(10)
             .build()
             .unwrap_or_else(|e| {
-                error!("Failed to build HTTP client for ApiRouter ({e}); using default client");
+                error!("Failed to build internal HTTP client ({e}); using default client");
                 Client::new()
             });
         Self {
             client,
             internal_token,
+        }
+    }
+
+    /// Отправляет JSON POST и возвращает статус и тело ответа.
+    pub async fn post_text<Req: Serialize>(
+        &self,
+        url: &str,
+        req: &Req,
+    ) -> Result<(StatusCode, String), ApiRouterError> {
+        if let Ok(body) = serde_json::to_string(req) {
+            debug!(">>> internal request to {}: {}", url, body);
+        } else {
+            debug!(">>> internal request to {}", url);
+        }
+
+        let response = self
+            .client
+            .post(url)
+            .header(crate::auth::INTERNAL_TOKEN_HEADER, &self.internal_token)
+            .json(req)
+            .send()
+            .await?;
+
+        let status = response.status();
+        let text = response.text().await.map_err(ApiRouterError::Network)?;
+        debug!("<<< internal reply from {}: {}", url, text);
+        Ok((status, text))
+    }
+}
+
+/// Роутер внутреннего API приложения с контрактом `ApiResponse<T>`.
+#[derive(Debug, Clone)]
+pub struct Router {
+    http: HttpClient,
+}
+
+impl Router {
+    pub fn new(timeout: Duration, connect_timeout: Duration, internal_token: String) -> Self {
+        Self {
+            http: HttpClient::new(timeout, connect_timeout, internal_token),
         }
     }
 
@@ -83,22 +129,8 @@ impl Router {
             addr.trim_end_matches('/'),
             path.trim_start_matches('/')
         );
-        if let Ok(body) = serde_json::to_string(&req) {
-            debug!(">>> API request send to {}: {}", url, body);
-        } else {
-            debug!(">>> API request send to {}", url);
-        }
 
-        let response = self
-            .client
-            .post(&url)
-            .header(crate::auth::INTERNAL_TOKEN_HEADER, &self.internal_token)
-            .json(&req)
-            .send()
-            .await?;
-
-        let status = response.status();
-        let body_text = response.text().await.map_err(ApiRouterError::Network)?;
+        let (status, body_text) = self.http.post_text(&url, &req).await?;
 
         if !status.is_success() {
             error!(
@@ -110,8 +142,6 @@ impl Router {
                 text: body_text,
             });
         }
-
-        debug!("<<< API reply recv from {}: {}", url, body_text);
 
         let api_response: ApiResponse<Resp> = serde_json::from_str(&body_text)?;
 
@@ -141,7 +171,6 @@ mod tests {
         let err = ApiRouterError::Api {
             message: "boom".to_string(),
         };
-        // Реализует Display и std::error::Error.
         assert_eq!(err.to_string(), "API error: boom");
         let _: &dyn std::error::Error = &err;
     }

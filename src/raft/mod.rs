@@ -31,7 +31,6 @@ pub mod typ {
 
     //pub type Infallible = openraft::error::Infallible;
     //pub type Fatal = openraft::error::Fatal<TypeConfig>;
-    pub type RaftError<E = openraft::error::Infallible> = openraft::error::RaftError<TypeConfig, E>;
     pub type RPCError<E = openraft::error::Infallible> = openraft::error::RPCError<TypeConfig, E>;
     //pub type NetworkError = openraft::error::NetworkError;
 
