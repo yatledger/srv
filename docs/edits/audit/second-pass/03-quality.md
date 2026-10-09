@@ -1,10 +1,32 @@
 # ТЗ №3. Качество и наблюдаемость 🟡 / отсутствующее 🔵
 
-> Группа: **edits/audit/second-pass** · Тип: аудит · Блок задач `Q*` · Статус: активен.
+> Группа: **edits/audit/second-pass** · Тип: аудит · Блок задач `Q*` · Статус: ✅ **Q1–Q8 выполнены**.
 > Ссылки на `src/...:NN` — состояние на коммите `a1f4bf0`.
 >
 > Сопутствующие документы: [`audit.md`](audit.md), [`01-critical.md`](01-critical.md),
 > [`02-important.md`](02-important.md), [`tracker.md`](tracker.md).
+
+## 0. Статус реализации
+
+Все задачи блока закрыты (см. журнал в [`tracker.md`](tracker.md)):
+
+- **Q1 ✅ (D10)** — `/metrics` оставлен публичным по решению владельца; действий не требовалось.
+- **Q2 ✅ (C41)** — `/pool` и `/full` снимают под read-локом только лёгкий снимок
+  (`Dag::node_parent_counts`, `Dag::depth_edges_snapshot`), сортировка/обход — вне лока;
+  добавлен `weights::compute_depths_from_edges`.
+- **Q3 ✅ (C42)** — `HttpClient::new` и оба `Router::new` возвращают `Result`; fallback на
+  `Client::new()` без таймаутов убран; `start_raft` прокидывает ошибку инициализации.
+- **Q4 ✅ (C44)** — добавлен `TRUST_PROXY`; ключ rate limit берётся из первого `X-Forwarded-For`
+  только при доверенном прокси, иначе — из `ConnectInfo`.
+- **Q5 ✅ (D11, C39)** — `CLUSTER_NODES` удалён (мёртвая опция); README/`.env.example`
+  дополнены `ADVERTISE_HOST` и `TRUST_PROXY`; `docs/api/API.md` синхронизирован с кодом.
+- **Q6 ✅ (D12)** — из OpenAPI убрана ветка «произвольные `var`»; `var` ссылается только на
+  `TransferTokenVar`.
+- **Q7 ✅ (S14)** — добавлен `.dockerignore` (исключает `target/`, `data/`, `logs/`, `.env`,
+  `docs/edits`, `docs/legacy`).
+- **Q8 ✅** — тесты `server::client_key_*` и `weights::depths_from_edges_match_full_computation`;
+  отказ SM→`4xx`, детерминизм снапшота и каноничность genesis покрыты тестами K1/K2/V14.
+
 
 ## 1. Цель
 

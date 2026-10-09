@@ -31,13 +31,13 @@
 | V17 | Учитывать отмену передачи снапшота | C40 | 🟠 | P2 | ✅ |
 | V18 | Монотонность `seq` по адресу (анти-replay) | C45 | 🟠 | P1 | ✅ |
 | Q1 | Публичный `/metrics` — оставить (решено) | D10 | 🟡 | P3 | ✅ |
-| Q2 | Не держать read-лок на `/pool`/`/full` | C41 | 🟡 | P3 | ⬜ |
-| Q3 | Не маскировать ошибку HTTP-клиента | C42 | 🟡 | P3 | ⬜ |
-| Q4 | Доверенный прокси в rate limit | C44 | 🟡 | P3 | ⬜ |
-| Q5 | Синхронизировать README с кодом + `CLUSTER_NODES`/`ADVERTISE_HOST` | D11, C39 | 🟡 | P3 | ⬜ |
-| Q6 | Исправить схему `var`/`func` в OpenAPI | D12 | 🔵 | P3 | ⬜ |
-| Q7 | Добавить `.dockerignore` | S14 | 🟡 | P3 | ⬜ |
-| Q8 | Тесты инвариантов | — | 🔵 | P3 | ⬜ |
+| Q2 | Не держать read-лок на `/pool`/`/full` | C41 | 🟡 | P3 | ✅ |
+| Q3 | Не маскировать ошибку HTTP-клиента | C42 | 🟡 | P3 | ✅ |
+| Q4 | Доверенный прокси в rate limit | C44 | 🟡 | P3 | ✅ |
+| Q5 | Синхронизировать README с кодом + `CLUSTER_NODES`/`ADVERTISE_HOST` | D11, C39 | 🟡 | P3 | ✅ |
+| Q6 | Исправить схему `var`/`func` в OpenAPI | D12 | 🔵 | P3 | ✅ |
+| Q7 | Добавить `.dockerignore` | S14 | 🟡 | P3 | ✅ |
+| Q8 | Тесты инвариантов | — | 🔵 | P3 | ✅ |
 
 ## Новые находки (реестр)
 
@@ -82,3 +82,4 @@
 | 2026-10-09 | — | Зафиксированы ответы владельца: D10/Q1 закрыты решением (публичный `/metrics`), `genesis.json` — канонические хэши (K2 P0), монотонный `seq` — нужен (заведён C45/V18), Redis — окончательная зависимость. |
 | 2026-10-09 | K1, K2 | Реализованы критические задачи. **K1/C34:** введён типизированный `ApplyResult { Ok, Rejected(String) }`, `Response::{ok,rejected,blank,as_result}` (`raft/command.rs`); все точки записи проверяют прикладной результат и возвращают `400`/`audit result=error` (`server.rs::add_handler`, `server.rs::load_genesis`, `cleanup.rs::archive_and_remove`); `add_tx` сохраняет 4xx при пересылке лидеру. **K2/C35/S15:** `tx_logic::validate_genesis` сверяет объявленный хэш с `ordered_sum(tx, func)` и структуру `var`; `load_genesis` его применяет; `genesis.json` перегенерирован с каноническими хэшами. Тесты: типы `Response`, `validate_genesis`, каноничность `genesis.json`, `api::public_add_rejects_missing_parent_with_4xx`. `fmt`/`clippy -D warnings`/`test --all` зелёные (97 lib + 5 api + 1 cluster). |
 | 2026-10-09 | V11–V18 | Реализован важный блок. **V11/S12:** `Dockerfile` копирует `benches/` и `docs/`. **V12/D13:** compose требует `REDIS_PASSWORD`/`INTERNAL_API_TOKEN` из окружения (`:?`), помечен local-only. **V16/S16:** `load_genesis` требует лидера (`503` иначе). **V18/C45:** `Dag.last_seq: BTreeMap<Address,u32>`, `validate_add` отклоняет `seq <= last` (пустой addr генезиса освобождён), `SCHEMA_VERSION` 2→3. **V14/C36,C37:** `BTreeSet`/`BTreeMap` для `Node.parents/children` и `nodes/added/last_seq`; удалены `Node.time`/`NodeTime`/`get_time`; добавлен тест детерминизма снапшота. **V15/C38:** родитель только из `added` отклоняется в `validate_add` и `validate_against_state`. **V17/C40:** `full_snapshot` учитывает `cancel` через `tokio::select!`. **V13/C43** закрыт в K1. Тесты: детерминизм снапшота, roundtrip `last_seq`, анти-replay, отказ по `added`-родителю. `fmt`/`clippy -D warnings`/`test --all` зелёные (102 lib + 5 api + 1 cluster); `docker compose config` валиден. |
+| 2026-10-09 | Q1–Q8 | Реализован блок качества. **Q1/D10** — без изменений (решено владельцем). **Q2/C41:** `/pool` снимает под локом только `(хэш, число родителей)` и сортирует/пагинирует вне лока; `/full` берёт лёгкий снимок рёбер (`Dag::depth_edges_snapshot`) и считает глубины (`weights::compute_depths_from_edges`) вне лока — write-лок `apply` больше не блокируется на обходе. **Q3/C42:** `HttpClient::new`/`Router::new` возвращают `Result`; молчаливый fallback на клиент без таймаутов убран, `lib.rs` прокидывает ошибку инициализации. **Q4/C44:** добавлен `TRUST_PROXY`; `client_key` берёт первый `X-Forwarded-For` только при доверенном прокси, иначе `ConnectInfo`. **Q5/D11,C39:** `CLUSTER_NODES` удалён из `config.rs`/README/`.env.example`, добавлены `ADVERTISE_HOST` и `TRUST_PROXY`; API.md синхронизирован (родитель из `added` и монотонность `seq`). **Q6/D12:** из OpenAPI убрана ветка «произвольные var» — `var` ссылается только на `TransferTokenVar`. **Q7/S14:** добавлен `.dockerignore` (target/data/logs/.env/docs/edits). **Q8:** тесты `client_key`, `depths_from_edges_match_full_computation`; уже существующие тесты K1/K2/V14 покрывают отказ SM→4xx, детерминизм снапшота и каноничность genesis. `fmt`/`clippy -D warnings`/`test --all` зелёные (104 lib + 5 api + 1 cluster); `docker compose config` валиден. |
