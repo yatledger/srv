@@ -1,7 +1,6 @@
 # N02 — план реализации Python-нагрузчика
 
-> Группа: **edits/feature/python-loadgen** · Тип: **feature** · Статус: 📐 **проектирование**
-> (ТЗ/план; реализация — после «ок» владельца).
+> Группа: **edits/feature/python-loadgen** · Тип: **feature** · Статус: ✅ **выполнено**.
 > Сопутствующие: [`spec.md`](spec.md) (ТЗ), [`tracker.md`](tracker.md), [`report.md`](report.md).
 > Родственная задача: [`../load-generator/`](../load-generator/) (`N01`, Rust-`loadgen`).
 

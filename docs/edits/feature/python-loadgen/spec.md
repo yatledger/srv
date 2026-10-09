@@ -1,7 +1,6 @@
 # N02. Python-нагрузчик (внешний клиент к кластеру)
 
-> Группа: **edits/feature/python-loadgen** · Тип: **feature** · Статус: 📐 **проектирование**
-> (ТЗ/план; реализация — после «ок» владельца).
+> Группа: **edits/feature/python-loadgen** · Тип: **feature** · Статус: ✅ **выполнено**.
 > Сопутствующие документы: [`plan.md`](plan.md), [`tracker.md`](tracker.md), [`report.md`](report.md).
 > Регламент: [`AGENTS.md`](../../../../AGENTS.md) · карта документации: [`docs/README.md`](../../../README.md)
 > · формат фич: [`../README.md`](../README.md) · родственная задача: [`../load-generator/`](../load-generator/)

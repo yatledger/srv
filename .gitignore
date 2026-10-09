@@ -20,3 +20,11 @@ dump.rdb
 
 # ОС
 .DS_Store
+
+# Python-нагрузчик (N02)
+python/.venv/
+__pycache__/
+*.pyc
+python/.pytest_cache/
+.pytest_cache/
+python/*.json
