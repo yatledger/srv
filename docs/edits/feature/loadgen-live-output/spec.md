@@ -1,6 +1,6 @@
 # N03. Наглядный (живой) вывод loadgen
 
-> Группа: **edits/feature/loadgen-live-output** · Тип: **feature** · Статус: 📐 **проектирование**.
+> Группа: **edits/feature/loadgen-live-output** · Тип: **feature** · Статус: ✅ **выполнено**.
 > Сопутствующие документы: [`plan.md`](plan.md), [`tracker.md`](tracker.md), [`report.md`](report.md).
 > Регламент: [`AGENTS.md`](../../../../AGENTS.md) · карта документации: [`docs/README.md`](../../../README.md)
 > · формат фич: [`../README.md`](../README.md).

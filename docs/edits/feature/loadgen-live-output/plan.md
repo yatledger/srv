@@ -1,6 +1,6 @@
 # N03 — план реализации наглядного вывода `loadgen`
 
-> Группа: **edits/feature/loadgen-live-output** · Тип: **feature** · Статус: 📐 **проектирование**.
+> Группа: **edits/feature/loadgen-live-output** · Тип: **feature** · Статус: ✅ **выполнено**.
 > Сопутствующие документы: [`spec.md`](spec.md) (ТЗ), [`tracker.md`](tracker.md), [`report.md`](report.md).
 > Регламент: [`AGENTS.md`](../../../../AGENTS.md) · формат фич: [`../README.md`](../README.md).
 > Коммит-база: `af6aa49`. Реализация — отдельной сессией после согласования.

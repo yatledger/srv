@@ -1,40 +1,69 @@
 # Отчёт о реализации `feature/loadgen-live-output` (N03)
 
-> Группа: **edits/feature/loadgen-live-output** · Тип: **feature** · Статус: 📐 **заготовка** (не реализовано).
+> Группа: **edits/feature/loadgen-live-output** · Тип: **feature** · Статус: ✅ **выполнено**.
 > Сопутствующие документы: [`spec.md`](spec.md) · [`plan.md`](plan.md) · [`tracker.md`](tracker.md).
-
-> ⚠️ Заполняется на этапе реализации кода (после согласования ТЗ/плана). На текущем шаге исходники
-> **не менялись** — документ пуст по содержанию.
 
 ## Кто и когда
 
-- Исполнитель: TODO (агентская сессия).
-- Дата: TODO.
-- Коммит-база: `af6aa49`.
-- Ветка: TODO (`feat/loadgen-live-output`).
+- Исполнитель: агентская сессия.
+- Дата: 2026-10-09.
+- Коммит-база: `af6aa49` (документы задачи — `1dd86ff`).
+- Ветка: `main`.
 
 ## Что сделано
 
-TODO: N03.1 (CLI/пейсинг), N03.2 (рендер), N03.3 (docs/тесты).
+Реализованы N03.1–N03.3:
+
+- **N03.1 — CLI и пейсинг.** Добавлены флаги `--show-tx` (`bool`) и `--sleep <SECS>`
+  (`Option<f64>` с `value_parser`, отклоняющим отрицательные/`NaN`/`inf`). Детект демо-режима —
+  `std::env::args_os().len() == 1`; резолвинг вынесен в чистую `LoadgenConfig::resolve(demo)`.
+  В `runner.rs` появилась модель `Sleep::{None, Fixed, Jitter}`, пауза разыгрывается **отдельным**
+  ГПСЧ (`sleep_seed`), чтобы не сдвигать детерминированный поток параметров транзакций; добавлен
+  `Prng::range_f64`.
+- **N03.2 — рендер.** В `report.rs` вынесены чистые функции `Palette` (ANSI-авто-детект по TTY и
+  `NO_COLOR`), `format_request_header`, `format_request_lines`, `format_response_line`,
+  `render_frame`, `shorten`. В `runner.rs` блок печатается под общим `Mutex` (атомарность при
+  `concurrency > 1`); печатается только финальная попытка (служебные ретраи — в `--verbose`).
+- **N03.3 — docs/тесты.** Обновлён `README.md` (флаги + подраздел «Демонстрационный режим»),
+  статусы задачи. Добавлены юнит-тесты на рендер, палитру, резолвинг демо-дефолтов, `--sleep`
+  и `range_f64`.
 
 ## Изменённые файлы
 
-TODO.
+| Файл | Действие |
+|---|---|
+| `src/bin/loadgen/main.rs` | флаги, демо-детект, `resolve`, `parse_sleep_secs`, тесты |
+| `src/bin/loadgen/runner.rs` | `Sleep`, `RunConfig.{show_tx,sleep}`, `sleep_between`, `sleep_seed`, атомарный вывод, `render_frame` |
+| `src/bin/loadgen/report.rs` | `Palette`, форматтеры блока, тесты |
+| `src/bin/loadgen/prng.rs` | `Prng::range_f64`, тест |
+| `README.md` | флаги `--show-tx`/`--sleep`, раздел «Демонстрационный режим» |
+| `docs/edits/feature/README.md` | статус N03 → выполнено |
+| `docs/edits/feature/loadgen-live-output/{spec,plan,tracker,report}.md` | статусы/журнал/отчёт |
+
+`Cargo.toml`, `.env.example`, `docs/api/`, CI, `scripts/loadgen.sh` — не менялись.
 
 ## Пройденные проверки
 
 | Проверка | Результат |
 |---|---|
-| `cargo fmt --all` | TODO |
-| `cargo clippy --all-targets -- -D warnings` | TODO |
-| `cargo test --all` | TODO |
-| Ручной демо-прогон (без параметров) | TODO |
-| `--json-out`/CI без блоков | TODO |
+| `cargo fmt --all -- --check` | ✅ OK |
+| `cargo clippy --all-targets -- -D warnings` | ✅ OK |
+| `cargo test --all` | ✅ 24 unit + 5 api + 1 cluster — все зелёные (Redis доступен) |
+| Ручной демо-прогон (без параметров, `timeout 9`) | ✅ печатает цветные блоки, идёт медленно |
+| `--show-tx --sleep 0 --tx 6 --concurrency 2` | ✅ 6 блоков, все `200 OK`, отчёт OK |
+| `--tx 4 --json-out …` | ✅ 0 блоков, JSON-отчёт записан |
 
 ## Отклонения от плана
 
-TODO.
+- Планировалась и отдельная проверка «демо ограничено `--duration-sec 60`»; в ручном прогоне
+  использовался `timeout 9` для краткости. Демо-резолвинг (`tps=0`, `concurrency=1`,
+  `duration_sec=Some(60)`, `Jitter 0.1..2.5`) покрыт юнит-тестом
+  `demo_resolves_to_live_slow_single_worker`.
+- `Palette::new` оставлен только под `#[cfg(test)]` (в рантайме используется `detect`), чтобы не
+  держать неиспользуемый публичный конструктор.
+- Прочих отклонений от [`plan.md`](plan.md) нет.
 
 ## Что дальше
 
-TODO.
+- Задача закрыта. При желании владельца — отдельной задачей: аналогичный «живой» режим для
+  Python-клиента `N02`, интерактивный TUI/графики (осознанно вне скоупа N03).
