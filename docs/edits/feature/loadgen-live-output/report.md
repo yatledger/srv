@@ -41,9 +41,10 @@
 - **Поле `worker`.** В шапке блока `worker` показывается только при `--concurrency > 1`; при
   единственном воркере (демо) скрыто — иначе это всегда `worker 0`. `format_request_header` и
   `render_frame` принимают `Option<usize>`.
-- **Уровень логов.** По умолчанию — `error` (`default_log_filter`), а не `warn`: bootstrap кластера
-  вызывает внутренние `openraft`-предупреждения `membership_log_id changed: …`, которые засоряли
-  демо-вывод. `--verbose` даёт `debug`; `RUST_LOG` имеет приоритет.
+- **Уровень логов.** Изначально дефолт был понижен до `error` (чтобы внутренние `openraft`
+  `membership_log_id changed: …` не засоряли вывод). В рамках **N04** дефолт поднят до `info` с
+  приглушением `openraft=error`: теперь видны события узлов, а шум openraft по-прежнему скрыт.
+  `--verbose` даёт `debug`; `RUST_LOG` имеет приоритет.
 
 ## Изменённые файлы
 
@@ -75,7 +76,7 @@
 | Случайные узлы: `--tx 300 --concurrency 8 --json-out` | ✅ 300/300, `ok=true`, реплики равны (303) |
 | `--concurrency 1` (демо) | ✅ шапка без `worker` |
 | `--concurrency 3` | ✅ шапка содержит `worker N` |
-| Логи по умолчанию | ✅ `membership_log_id changed` отсутствует; `--verbose` их включает, `RUST_LOG` переопределяет |
+| Логи по умолчанию | ✅ (N04) `info` + приглушённый `openraft`; `membership_log_id changed` отсутствует; `--verbose` даёт `debug`, `RUST_LOG` переопределяет |
 
 ## Отклонения от плана
 
