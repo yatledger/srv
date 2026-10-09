@@ -7,6 +7,7 @@
 use tracing::{debug, error, info};
 
 use crate::app::App;
+use crate::audit::{self, AuditSource};
 use crate::domain::Hash;
 use crate::raft::command::Request;
 use crate::raft::store::StateMachineStore;
@@ -62,8 +63,12 @@ type NodePayload = (Hash, String);
 ///
 /// Возвращает число удалённых узлов. Узлы, уже находящиеся в реестре `added`,
 /// пропускаются. Данные читаются под коротким локом, запись в Redis и Raft
-/// выполняется вне блокировки.
-pub async fn archive_and_remove(app: &App, candidates: Vec<Hash>) -> Result<usize, String> {
+/// выполняется вне блокировки. `source` фиксируется в аудит-логе (O7).
+pub async fn archive_and_remove(
+    app: &App,
+    candidates: Vec<Hash>,
+    source: AuditSource,
+) -> Result<usize, String> {
     if candidates.is_empty() {
         return Ok(0);
     }
@@ -121,10 +126,21 @@ pub async fn archive_and_remove(app: &App, candidates: Vec<Hash>) -> Result<usiz
     let request = Request::Remove {
         nodes: nodes_to_remove.clone(),
     };
-    app.raft
-        .client_write(request)
-        .await
-        .map_err(|e| format!("Raft error: {e}"))?;
+    match app.raft.client_write(request).await {
+        Ok(_) => {
+            audit::remove(source, app.id, &nodes_to_remove, true, None);
+        }
+        Err(e) => {
+            audit::remove(
+                source,
+                app.id,
+                &nodes_to_remove,
+                false,
+                Some(&e.to_string()),
+            );
+            return Err(format!("Raft error: {e}"));
+        }
+    }
 
     Ok(nodes_to_remove.len())
 }

@@ -11,6 +11,7 @@ use openraft::error::decompose::DecomposeResult;
 
 use crate::NodeId;
 use crate::app::App;
+use crate::audit::{self, AuditSource};
 use crate::raft;
 use raft::typ::*;
 use tracing::error;
@@ -23,28 +24,46 @@ pub async fn add_learner(
     let node_id = req.0;
     let node = BasicNode { addr: req.1 };
 
-    let res = app
+    let result = app
         .raft
         .add_learner(node_id, node, true)
         .await
         .decompose()
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR);
 
-    Ok(Json(res))
+    let ok = result.is_ok();
+    audit::membership(
+        AuditSource::Management,
+        app.id,
+        &[node_id],
+        ok,
+        (!ok).then_some("add_learner failed"),
+    );
+    Ok(Json(result?))
 }
 
 pub async fn change_membership(
     State(app): State<App>,
     Json(req): Json<BTreeSet<NodeId>>,
 ) -> Result<Json<impl serde::Serialize>, StatusCode> {
-    let res = app
+    let members: Vec<NodeId> = req.iter().copied().collect();
+    let result = app
         .raft
         .change_membership(req, false)
         .await
         .decompose()
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-    Ok(Json(res))
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR);
+
+    let ok = result.is_ok();
+    audit::membership(
+        AuditSource::Management,
+        app.id,
+        &members,
+        ok,
+        (!ok).then_some("change_membership failed"),
+    );
+    Ok(Json(result?))
 }
 
 pub async fn init(

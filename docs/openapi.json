@@ -1,0 +1,240 @@
+{
+  "openapi": "3.0.3",
+  "info": {
+    "title": "dagdb public API",
+    "version": "0.1.0",
+    "description": "Публичный API распределённого узла хранения DAG-графа транзакций поверх Raft. Публичные эндпоинты не требуют токена; внутренние (/add, /mng/*, /raft/*) требуют заголовок x-internal-token и здесь не документируются."
+  },
+  "servers": [
+    { "url": "http://127.0.0.1:21001", "description": "Локальный узел" }
+  ],
+  "paths": {
+    "/": {
+      "post": {
+        "summary": "Принять подписанную транзакцию",
+        "operationId": "addTransaction",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/TxRead" }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Транзакция принята и применена",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/StandardResponse" }
+              }
+            }
+          },
+          "400": {
+            "description": "Некорректная транзакция (структура, подпись, хэш, отсутствующий родитель)",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ErrorResponse" }
+              }
+            }
+          },
+          "413": { "description": "Тело запроса превышает MAX_REQUEST_BYTES" },
+          "429": { "description": "Превышен rate limit публичного API" },
+          "503": { "description": "В кластере нет лидера" }
+        }
+      }
+    },
+    "/pool": {
+      "get": {
+        "summary": "Узлы-кандидаты к очистке (по числу активных родителей)",
+        "operationId": "getPool",
+        "parameters": [
+          { "$ref": "#/components/parameters/Limit" },
+          { "$ref": "#/components/parameters/Offset" }
+        ],
+        "responses": {
+          "200": {
+            "description": "Страница узлов",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/PoolResponse" }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/full": {
+      "get": {
+        "summary": "Граф с глубинами узлов (по возрастанию глубины)",
+        "operationId": "getFullGraph",
+        "parameters": [
+          { "$ref": "#/components/parameters/Limit" },
+          { "$ref": "#/components/parameters/Offset" }
+        ],
+        "responses": {
+          "200": {
+            "description": "Страница узлов с глубинами",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/FullGraphResponse" }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/health": {
+      "get": {
+        "summary": "Liveness-проверка",
+        "operationId": "health",
+        "responses": {
+          "200": {
+            "description": "Процесс жив",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/HealthResponse" }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/ready": {
+      "get": {
+        "summary": "Readiness-проверка (лидер выбран, Redis достижим)",
+        "operationId": "ready",
+        "responses": {
+          "200": { "description": "Узел готов обслуживать запросы" },
+          "503": { "description": "Узел не готов" }
+        }
+      }
+    },
+    "/metrics": {
+      "get": {
+        "summary": "Метрики в формате Prometheus text exposition",
+        "operationId": "metrics",
+        "responses": {
+          "200": {
+            "description": "Текстовый формат Prometheus",
+            "content": { "text/plain": { "schema": { "type": "string" } } }
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "parameters": {
+      "Limit": {
+        "name": "limit",
+        "in": "query",
+        "required": false,
+        "schema": { "type": "integer", "minimum": 1, "maximum": 1000, "default": 100 }
+      },
+      "Offset": {
+        "name": "offset",
+        "in": "query",
+        "required": false,
+        "schema": { "type": "integer", "minimum": 0, "default": 0 }
+      }
+    },
+    "schemas": {
+      "TxRead": {
+        "type": "object",
+        "required": ["tx", "sign", "func"],
+        "properties": {
+          "tx": { "$ref": "#/components/schemas/Tx" },
+          "sign": {
+            "type": "string",
+            "description": "Подпись ed25519 (hex, 64 байта) над каноническим хэшем tx+func"
+          },
+          "func": {
+            "type": "string",
+            "enum": ["transferToken"],
+            "description": "Имя функции; входит в подписываемый и хэшируемый контент"
+          }
+        }
+      },
+      "Tx": {
+        "type": "object",
+        "required": ["prnts", "addr", "seq", "var"],
+        "properties": {
+          "prnts": {
+            "type": "array",
+            "items": { "type": "string" },
+            "minItems": 2,
+            "maxItems": 100,
+            "description": "Хэши родителей (уникальные, непустые). Генезис-узлы допускают пустой список на границе state machine."
+          },
+          "addr": { "type": "string", "description": "Публичный ключ ed25519 в base58" },
+          "seq": { "type": "integer", "minimum": 0 },
+          "var": {
+            "oneOf": [
+              { "$ref": "#/components/schemas/TransferTokenVar" },
+              { "type": "object", "description": "Произвольные данные для неизвестных func" }
+            ]
+          }
+        }
+      },
+      "TransferTokenVar": {
+        "type": "object",
+        "required": ["ca", "to", "val"],
+        "properties": {
+          "ca": { "type": "string", "description": "Адрес-источник (непустой)" },
+          "to": { "type": "string", "description": "Адрес-получатель (непустой)" },
+          "val": { "type": "integer", "minimum": 0, "description": "Сумма перевода" },
+          "msg": { "type": "string", "maxLength": 2500, "nullable": true }
+        }
+      },
+      "StandardResponse": {
+        "type": "object",
+        "properties": {
+          "status": { "type": "string", "example": "success" },
+          "message": { "type": "string", "nullable": true }
+        }
+      },
+      "PoolResponse": {
+        "type": "object",
+        "properties": {
+          "status": { "type": "string" },
+          "nodes": { "type": "array", "items": { "type": "string" } },
+          "total": { "type": "integer" },
+          "offset": { "type": "integer" },
+          "limit": { "type": "integer" },
+          "message": { "type": "string", "nullable": true }
+        }
+      },
+      "FullGraphResponse": {
+        "type": "object",
+        "properties": {
+          "status": { "type": "string" },
+          "nodes": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "node": { "type": "string" },
+                "depth": { "type": "integer" }
+              }
+            }
+          },
+          "total": { "type": "integer" },
+          "offset": { "type": "integer" },
+          "limit": { "type": "integer" },
+          "message": { "type": "string", "nullable": true }
+        }
+      },
+      "HealthResponse": {
+        "type": "object",
+        "properties": { "status": { "type": "string", "example": "ok" } }
+      },
+      "ErrorResponse": {
+        "type": "object",
+        "properties": {
+          "status": { "type": "string", "example": "error" },
+          "message": { "type": "string" }
+        }
+      }
+    }
+  }
+}

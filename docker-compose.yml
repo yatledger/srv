@@ -27,6 +27,11 @@ services:
       - "21001:21001"
     depends_on:
       - redis
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:21001/health"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
 
   node2:
     build: .
@@ -46,6 +51,11 @@ services:
       - "21002:21002"
     depends_on:
       - redis
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:21002/health"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
 
   node3:
     build: .
@@ -65,6 +75,11 @@ services:
       - "21003:21003"
     depends_on:
       - redis
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:21003/health"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
 
   node4:
     build: .
@@ -84,6 +99,11 @@ services:
       - "21004:21004"
     depends_on:
       - redis
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:21004/health"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
 
   # Одноразовый bootstrap: инициализирует кластер из 4 узлов и грузит генезис.
   init:

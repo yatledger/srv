@@ -267,6 +267,11 @@ impl Dag {
         self.added.contains_key(node)
     }
 
+    /// Число записей в реестре удалённых узлов (для метрик O2).
+    pub fn added_len(&self) -> usize {
+        self.added.len()
+    }
+
     pub fn compute_descendants_with_depth_and_weight(&self) -> HashMap<Hash, Vec<NodeInfo>> {
         let node_keys: HashSet<Hash> = self.nodes.keys().cloned().collect();
         compute_descendants_with_depth_and_weight(&self.nodes, &node_keys)

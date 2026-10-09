@@ -5,20 +5,25 @@
 //! привязка к axum.
 
 use axum::{
-    Router,
-    extract::{DefaultBodyLimit, Json, State},
-    http::StatusCode,
+    Json, Router,
+    extract::{ConnectInfo, DefaultBodyLimit, State},
+    http::{HeaderValue, StatusCode, header},
+    middleware::Next,
+    response::{Html, IntoResponse, Response},
     routing::{get, post},
 };
 
 use std::fs;
+use std::net::SocketAddr;
+use std::time::Instant;
 
 use serde::{Deserialize, Serialize};
 use tokio::net::TcpListener;
-use tracing::{debug, error, info};
+use tracing::{Instrument, debug, error, info};
 
 use crate::Tx;
 use crate::app::App;
+use crate::audit::{self, AuditSource};
 use crate::domain::{Func, Hash};
 use crate::raft;
 use crate::tx_logic::{self, PrepareError, TxRead};
@@ -27,6 +32,61 @@ use raft::command::Request;
 
 use crate::graph::weights::NodeDepth;
 use crate::web::ApiResponse;
+
+/// Заголовок корреляционного идентификатора запроса (O2).
+pub const REQUEST_ID_HEADER: &str = "x-request-id";
+
+/// Сквозной идентификатор запроса, назначаемый middleware.
+fn next_request_id() -> String {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static COUNTER: AtomicU64 = AtomicU64::new(1);
+    let seq = COUNTER.fetch_add(1, Ordering::Relaxed);
+    format!("req-{seq:016x}")
+}
+
+/// Middleware наблюдаемости (O2): назначает корреляционный id, ведёт span и
+/// считает HTTP-метрики (длительность и статус).
+async fn observability_middleware(
+    State(app): State<App>,
+    mut request: axum::extract::Request,
+    next: Next,
+) -> Response {
+    let request_id = request
+        .headers()
+        .get(REQUEST_ID_HEADER)
+        .and_then(|v| v.to_str().ok())
+        .map(str::to_string)
+        .unwrap_or_else(next_request_id);
+
+    if let Ok(value) = HeaderValue::from_str(&request_id) {
+        request.headers_mut().insert(REQUEST_ID_HEADER, value);
+    }
+
+    let method = request.method().to_string();
+    let path = request.uri().path().to_string();
+    let span = tracing::info_span!(
+        "http_request",
+        request_id = %request_id,
+        method = %method,
+        path = %path,
+    );
+
+    let started = Instant::now();
+    let mut response = next.run(request).instrument(span).await;
+    let elapsed = started.elapsed();
+
+    if let Ok(value) = HeaderValue::from_str(&request_id) {
+        response.headers_mut().insert(REQUEST_ID_HEADER, value);
+    }
+
+    app.metrics.observe_http(
+        &method,
+        &path,
+        response.status().as_u16(),
+        elapsed.as_secs_f64(),
+    );
+    response
+}
 
 /// Стандартный ответ внутреннего API.
 #[derive(Deserialize, Serialize, Debug)]
@@ -194,21 +254,33 @@ async fn add_handler(
     }
 
     let request = Request::Add {
-        hash: payload.hash,
+        hash: payload.hash.clone(),
         tx: payload.tx,
         sign: payload.sign,
         func,
     };
 
     match app.raft.client_write(request).await {
-        Ok(_response) => (
-            StatusCode::OK,
-            Json(ApiResponse::Success(StandardResponse {
-                status: "success".to_string(),
-                message: None,
-            })),
-        ),
+        Ok(_response) => {
+            app.metrics.record_tx("add", true);
+            audit::add(AuditSource::Api, app.id, &payload.hash, true, None);
+            (
+                StatusCode::OK,
+                Json(ApiResponse::Success(StandardResponse {
+                    status: "success".to_string(),
+                    message: None,
+                })),
+            )
+        }
         Err(e) => {
+            app.metrics.record_tx("add", false);
+            audit::add(
+                AuditSource::Api,
+                app.id,
+                &payload.hash,
+                false,
+                Some(&e.to_string()),
+            );
             error!("Failed to write to Raft: {}", e);
             (
                 StatusCode::INTERNAL_SERVER_ERROR,
@@ -307,7 +379,7 @@ async fn remove_heavy_nodes_handler(
         );
     }
 
-    match crate::cleanup::archive_and_remove(&app, payload.nodes).await {
+    match crate::cleanup::archive_and_remove(&app, payload.nodes, AuditSource::Api).await {
         Ok(removed) => (
             StatusCode::OK,
             Json(ApiResponse::Success(StandardResponse {
@@ -350,6 +422,152 @@ async fn get_full_graph_handler(
             message: None,
         }),
     )
+}
+
+/// `GET /metrics` — метрики в формате Prometheus text exposition (O2).
+async fn metrics_handler(State(app): State<App>) -> Response {
+    app.refresh_raft_metrics();
+    app.refresh_dag_metrics().await;
+    match app.metrics.encode() {
+        Ok(body) => (
+            StatusCode::OK,
+            [(
+                header::CONTENT_TYPE,
+                HeaderValue::from_static("text/plain; version=0.0.4"),
+            )],
+            body,
+        )
+            .into_response(),
+        Err(e) => {
+            error!("failed to encode metrics: {e}");
+            (StatusCode::INTERNAL_SERVER_ERROR, "metrics encoding failed").into_response()
+        }
+    }
+}
+
+/// `GET /health` — liveness: процесс жив (O2).
+async fn health_handler() -> (StatusCode, Json<HealthResponse>) {
+    (
+        StatusCode::OK,
+        Json(HealthResponse {
+            status: "ok".to_string(),
+        }),
+    )
+}
+
+/// `GET /ready` — readiness: Raft инициализирован, есть лидер, Redis достижим (O2).
+async fn ready_handler(State(app): State<App>) -> (StatusCode, Json<ReadyResponse>) {
+    let metrics = app.raft.metrics().borrow().clone();
+    let has_leader = metrics.current_leader.is_some();
+
+    let mut redis = app.redis.clone();
+    let redis_ok = redis::cmd("PING")
+        .query_async::<String>(&mut redis)
+        .await
+        .is_ok();
+
+    let ready = has_leader && redis_ok;
+    let status = if ready {
+        StatusCode::OK
+    } else {
+        StatusCode::SERVICE_UNAVAILABLE
+    };
+
+    let mut reasons = Vec::new();
+    if !has_leader {
+        reasons.push("no leader elected".to_string());
+    }
+    if !redis_ok {
+        reasons.push("redis unavailable".to_string());
+    }
+
+    (
+        status,
+        Json(ReadyResponse {
+            status: if ready { "ready" } else { "not_ready" }.to_string(),
+            ready,
+            has_leader,
+            redis_ok,
+            reasons,
+        }),
+    )
+}
+
+/// `GET /openapi.json` — спецификация публичного API (O4).
+async fn openapi_handler() -> Response {
+    (
+        StatusCode::OK,
+        [(
+            header::CONTENT_TYPE,
+            HeaderValue::from_static("application/json"),
+        )],
+        include_str!("../docs/openapi.json"),
+    )
+        .into_response()
+}
+
+const SWAGGER_UI: &str = r##"<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>dagdb API</title>
+  <link rel="stylesheet" href="https://unpkg.com/swagger-ui-dist@5/swagger-ui.css">
+</head>
+<body>
+  <div id="swagger-ui"></div>
+  <script src="https://unpkg.com/swagger-ui-dist@5/swagger-ui-bundle.js"></script>
+  <script>
+    window.onload = () => {
+      window.ui = SwaggerUIBundle({ url: "/openapi.json", dom_id: "#swagger-ui" });
+    };
+  </script>
+</body>
+</html>"##;
+
+/// `GET /docs` — минимальный Swagger UI для `openapi.json` (O4).
+async fn docs_handler() -> Html<&'static str> {
+    Html(SWAGGER_UI)
+}
+
+/// `POST /mng/snapshot` — принудительно строит снапшот (O5: бэкап).
+async fn trigger_snapshot_handler(
+    State(app): State<App>,
+) -> (StatusCode, Json<ApiResponse<StandardResponse>>) {
+    match app.raft.trigger().snapshot().await {
+        Ok(()) => (
+            StatusCode::OK,
+            Json(ApiResponse::Success(StandardResponse {
+                status: "success".to_string(),
+                message: Some("snapshot triggered".to_string()),
+            })),
+        ),
+        Err(e) => {
+            error!("failed to trigger snapshot: {e}");
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ApiResponse::Error {
+                    status: "error".to_string(),
+                    message: format!("snapshot trigger failed: {e}"),
+                }),
+            )
+        }
+    }
+}
+
+/// Ответ `/health`.
+#[derive(Serialize)]
+struct HealthResponse {
+    status: String,
+}
+
+/// Ответ `/ready`.
+#[derive(Serialize)]
+struct ReadyResponse {
+    status: String,
+    ready: bool,
+    has_leader: bool,
+    redis_ok: bool,
+    reasons: Vec<String>,
 }
 
 // Структура для десериализации JSON с генезис-транзакциями.
@@ -411,12 +629,28 @@ pub async fn load_genesis(
 
         match app.raft.client_write(request).await {
             Ok(_) => {
+                app.metrics.record_tx("add", true);
+                audit::add(
+                    AuditSource::Genesis,
+                    app.id,
+                    &Hash::from(tx.hash.as_str()),
+                    true,
+                    None,
+                );
                 debug!(
                     "Successfully added genesis transaction with hash {}",
                     tx.hash
                 );
             }
             Err(e) => {
+                app.metrics.record_tx("add", false);
+                audit::add(
+                    AuditSource::Genesis,
+                    app.id,
+                    &Hash::from(tx.hash.as_str()),
+                    false,
+                    Some(&e.to_string()),
+                );
                 error!(
                     "Failed to write genesis transaction {} to Raft: {}",
                     tx.hash, e
@@ -514,13 +748,55 @@ pub struct HeavyNodesRequest {
     pub nodes: Vec<Hash>,
 }
 
-/// Запускает HTTP-сервер: собирает роутеры и слушает `bind_addr`.
-pub async fn start_server(app: App, bind_addr: String) -> Result<(), Box<dyn std::error::Error>> {
-    // Публичный API: доступен без аутентификации.
+/// Middleware ограничения частоты публичного API (O3).
+async fn rate_limit_middleware(
+    State(app): State<App>,
+    request: axum::extract::Request,
+    next: Next,
+) -> Response {
+    // Адрес клиента берём из расширений (ConnectInfo), при отсутствии — общий ключ.
+    let key = request
+        .extensions()
+        .get::<ConnectInfo<SocketAddr>>()
+        .map(|c| c.0.ip().to_string())
+        .unwrap_or_else(|| "unknown".to_string());
+
+    if app.rate_limiter.check(&key) {
+        next.run(request).await
+    } else {
+        (
+            StatusCode::TOO_MANY_REQUESTS,
+            Json(ApiResponse::<StandardResponse>::Error {
+                status: "error".to_string(),
+                message: "rate limit exceeded".to_string(),
+            }),
+        )
+            .into_response()
+    }
+}
+
+/// Запускает HTTP-сервер: собирает роутеры, слушает `bind_addr` и корректно
+/// завершается по сигналу [`App::shutdown`] (O5).
+pub async fn start_server(
+    app: App,
+    bind_addr: String,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let max_body = app.max_request_bytes;
+
+    // Публичный API: доступен без аутентификации, ограничен по частоте.
     let public = Router::new()
         .route("/", post(add_tx))
         .route("/pool", get(pool_handler))
-        .route("/full", get(get_full_graph_handler));
+        .route("/full", get(get_full_graph_handler))
+        .route("/metrics", get(metrics_handler))
+        .route("/health", get(health_handler))
+        .route("/ready", get(ready_handler))
+        .route("/openapi.json", get(openapi_handler))
+        .route("/docs", get(docs_handler))
+        .route_layer(axum::middleware::from_fn_with_state(
+            app.clone(),
+            rate_limit_middleware,
+        ));
 
     // Внутренний API: только с кластерным токеном.
     let internal = Router::new()
@@ -534,6 +810,7 @@ pub async fn start_server(app: App, bind_addr: String) -> Result<(), Box<dyn std
         .route("/mng/add-learner", post(add_learner))
         .route("/mng/init", post(init))
         .route("/mng/metrics", post(metrics))
+        .route("/mng/snapshot", post(trigger_snapshot_handler))
         .route_layer(axum::middleware::from_fn_with_state(
             app.clone(),
             crate::auth::require_internal_token,
@@ -541,13 +818,26 @@ pub async fn start_server(app: App, bind_addr: String) -> Result<(), Box<dyn std
 
     let srv = public
         .merge(internal)
-        .layer(DefaultBodyLimit::max(10 * 1024 * 1024))
+        // O2: наблюдаемость применяется ко всем маршрутам.
+        .route_layer(axum::middleware::from_fn_with_state(
+            app.clone(),
+            observability_middleware,
+        ))
+        .layer(DefaultBodyLimit::max(max_body))
         .with_state(app.clone());
 
     let listener = TcpListener::bind(&bind_addr).await?;
-    info!("Server running at {}", bind_addr);
+    let local_addr = listener.local_addr()?;
+    info!("Server running at {}", local_addr);
 
-    axum::serve(listener, srv).await?;
+    let mut shutdown_signal = app.shutdown.signal();
+    axum::serve(
+        listener,
+        srv.into_make_service_with_connect_info::<SocketAddr>(),
+    )
+    .with_graceful_shutdown(async move { shutdown_signal.cancelled().await })
+    .await?;
 
+    info!("HTTP server stopped accepting requests");
     Ok(())
 }

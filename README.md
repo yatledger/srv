@@ -26,23 +26,33 @@
 ```
 src/
 ├── main.rs          точка входа: логи, конфиг, запуск Raft/HTTP, фоновой очистки
-├── config.rs        AppConfig: чтение CLI + env (dotenvy), таймауты, секреты
+├── config.rs        AppConfig: чтение CLI + env (dotenvy), профили, таймауты, секреты
 ├── lib.rs           TypeConfig, тип Tx, start_raft (сборка узла)
-├── server.rs        HTTP-хендлеры; разделение публичного и внутреннего API
+├── server.rs        HTTP-хендлеры; публичный/внутренний API, наблюдаемость, rate limit
 ├── auth.rs          middleware проверки кластерного токена (x-internal-token)
 ├── web.rs           внутренний HTTP-клиент (пересылка на лидера, с токеном)
-├── processor.rs     фоновая очистка «тяжёлых» узлов (followers → лидеру)
+├── processor.rs     фоновая очистка «тяжёлых» узлов (ведёт лидер)
+├── cleanup.rs       выбор кандидатов/тяжёлых узлов, архивация в Redis
+├── metrics.rs       реестр метрик Prometheus (O2)
+├── ratelimit.rs     token-bucket для публичного API (O3)
+├── shutdown.rs      graceful shutdown (O5)
+├── audit.rs         аудит-события add/remove/membership (O7)
 ├── graph/
 │   ├── dag.rs       DAG: узлы, родители/дети, реестр added, TxVar и валидация
 │   └── weights.rs   глубины и веса узлов (BFS, rayon)
 └── raft/
     ├── command.rs   команды Request::{Add, Remove} и Response
     ├── log.rs       PersistentLogStore (redb) + in-memory LogStore (тесты)
-    ├── store.rs     state machine: детерминированная валидация, персистентность
+    ├── store.rs     state machine: валидация, персистентность, версия схемы
     ├── db.rs        обёртка над redb (таблицы meta/logs)
     ├── network.rs   сетевой слой Raft (append/vote/snapshot)
     ├── router.rs    HTTP-транспорт для Raft RPC
     └── api.rs       хендлеры /raft/* и /mng/*
+benches/
+└── graph_bench.rs   criterion-бенчмарки графа (O9)
+scripts/
+├── backup.sh        бэкап DATA_DIR + Redis (O5)
+└── restore.sh       восстановление из бэкапа (O5)
 ```
 
 **Поток записи.** Клиент шлёт подписанную транзакцию на `POST /`. Узел проверяет
@@ -82,6 +92,8 @@ cp .env.example .env
 | Переменная | CLI | По умолчанию | Назначение |
 |---|---|---|---|
 | `NODE_ID` | `--id` | `1` | Уникальный ID узла в кластере |
+| `APP_PROFILE` | `--profile` | `dev` | Профиль окружения: `dev`/`stage`/`prod` |
+| `LOG_FORMAT` | `--log-format` | `text` | Формат логов: `text`/`json` |
 | `ADVERTISE_ADDR` | `--advertise-addr` | — | Адрес узла, публикуемый кластеру (`host:port`) |
 | `BIND_ADDR` | `--bind-addr` | `0.0.0.0:<HTTP_PORT>` | Адрес прослушивания HTTP |
 | `HTTP_PORT` | `--port` | `21001` | Порт HTTP (если не задан `BIND_ADDR`) |
@@ -97,6 +109,9 @@ cp .env.example .env
 | `PROCESSOR_INTERVAL_MS` | — | `250` | Интервал фоновой очистки «тяжёлых» узлов |
 | `WEIGHT_THRESHOLD` | — | `0.5` | Порог веса (после насыщения) для удаления узла |
 | `CLEANUP_BATCH_SIZE` | — | `100` | Размер батча кандидатов на очистку за цикл |
+| `PUBLIC_RATE_LIMIT_PER_SEC` | — | `50` | Лимит запросов/с на публичный `POST /` (0 — выключено) |
+| `PUBLIC_RATE_LIMIT_BURST` | — | `100` | Всплеск для rate limiter |
+| `MAX_REQUEST_BYTES` | — | `1048576` | Advisory-лимит размера тела запроса |
 
 В `DATA_DIR` создаются `raft-log.redb` (Raft-лог, vote, committed) и
 `state-machine.redb` (DAG, `added`, membership, снапшот).
@@ -143,6 +158,14 @@ docker compose up --build
 | `POST` | `/` | Принять подписанную транзакцию |
 | `GET` | `/pool?limit=&offset=` | Узлы-кандидаты (пагинация, по умолчанию `limit=100`, максимум `1000`) |
 | `GET` | `/full?limit=&offset=` | Граф с глубинами (пагинация, те же лимиты) |
+| `GET` | `/metrics` | Метрики Prometheus |
+| `GET` | `/health` | Liveness |
+| `GET` | `/ready` | Readiness (лидер выбран, Redis достижим) |
+| `GET` | `/openapi.json` | OpenAPI-спецификация публичного API |
+| `GET` | `/docs` | Swagger UI |
+
+Полное описание схемы `Tx`/`var`/`func` и правил валидации — в
+[`docs/API.md`](docs/API.md).
 
 ### Внутренний (требует заголовок `x-internal-token`)
 
@@ -156,6 +179,7 @@ docker compose up --build
 | `POST` | `/mng/add-learner` | Добавить learner-узел |
 | `POST` | `/mng/change-membership` | Изменить состав кластера |
 | `POST` | `/mng/metrics` | Метрики Raft |
+| `POST` | `/mng/snapshot` | Принудительно построить снапшот (перед бэкапом) |
 
 ### Примеры
 
@@ -216,6 +240,49 @@ curl http://127.0.0.1:21001/full
   (service mesh/VPN) или отдельного этапа развития; при развёртывании в недоверенной
   сети выносите узлы в приватный сегмент.
 
+## Наблюдаемость
+
+- `GET /metrics` — метрики в формате Prometheus text exposition: состояние Raft
+  (term, индексы, очередь применения, лидер, узлы), размер DAG и реестра `added`,
+  порог веса, счётчики очистки, транзакций и HTTP (с гистограммой длительности).
+  InfluxDB2/VictoriaMetrics/Telegraf подключаются внешним сборщиком
+  (`inputs.prometheus` или `remote_write`), изменений в узле не требуется.
+- `GET /health` — liveness; `GET /ready` — readiness (есть лидер, Redis достижим).
+- Логи структурированы: `LOG_FORMAT=json` включает однострочный JSON, каждый
+  HTTP-запрос получает корреляционный `x-request-id` (возвращается в ответе).
+- Аудит значимых операций (add/remove/membership) пишется в лог с
+  `target="audit"` и указанием источника (`api`/`processor`/`genesis`/`management`).
+
+## Graceful shutdown и бэкап (O5)
+
+По `Ctrl-C`/`SIGTERM` узел перестаёт принимать запросы
+(`with_graceful_shutdown`), затем финализирует Raft (`Raft::shutdown`) — состояние
+сохраняется в `DATA_DIR` (redb) и переживает рестарт.
+
+Бэкап (свежий снапшот + копия `DATA_DIR` + дамп Redis):
+
+```bash
+NODE_URL=http://127.0.0.1:21001 DATA_DIR=./data/node1 \
+  INTERNAL_API_TOKEN=$INTERNAL_API_TOKEN REDIS_URL=$REDIS_URL \
+  ./scripts/backup.sh          # создаст ./backups/<timestamp>/
+```
+
+Восстановление (узел должен быть остановлен):
+
+```bash
+BACKUP_SNAPSHOT=./backups/<timestamp> DATA_DIR=./data/node1 ./scripts/restore.sh
+```
+
+## Бенчмарки (O9)
+
+```bash
+cargo bench
+```
+
+Бенчмарки `compute_descendants_with_depth_and_weight` (500 узлов),
+`get_nodes_by_depth` (1000 узлов) и `add_node_with_parents` (throughput записи).
+CI проверяет компиляцию бенчмарков (`cargo bench --no-run`), не запуская их.
+
 ## Тесты и качество
 
 ```bash
@@ -228,11 +295,14 @@ CI (`.github/workflows/ci.yml`) выполняет fmt + clippy `-D warnings` + 
 
 ## Известные ограничения
 
-- Обработку «тяжёлых» узлов инициируют только followers; в одноузловом кластере
-  очистка не запускается.
 - Внутрикластерный трафик идёт без TLS; защита — общий кластерный токен.
 - Публичная регистрация узлов/membership не предусмотрена: управление только
   внутренним API с токеном.
+- Rate limiter и метрики — в памяти узла (без внешнего хранилища); при
+  необходимости горизонтального сбора используйте `/metrics` и внешний сборщик.
 
 Полный перечень находок и план работ — в [`docs/AUDIT.md`](docs/AUDIT.md) и
-[`docs/tz/README.md`](docs/tz/README.md).
+[`docs/tz/README.md`](docs/tz/README.md). Профили конфигурации: `dev` (по
+умолчанию), `stage` (токен ≥16 символов), `prod` (токен ≥32 символов и явный
+`ADVERTISE_ADDR`); при старте конфигурация валидируется и все проблемы выводятся
+одним сообщением.

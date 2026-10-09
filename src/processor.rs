@@ -10,6 +10,7 @@ use tracing::{debug, info};
 
 use crate::NodeId;
 use crate::app::App;
+use crate::audit::AuditSource;
 
 /// Запускает цикл очистки. Один вызов на узел; активную работу выполняет лидер.
 pub async fn start_processor(app: App) {
@@ -47,13 +48,15 @@ pub async fn start_processor(app: App) {
         let heavy_len = heavy.len();
 
         // 3. Архивируем в Redis и удаляем через Raft (лидер напрямую).
-        match crate::cleanup::archive_and_remove(&app, heavy).await {
+        match crate::cleanup::archive_and_remove(&app, heavy, AuditSource::Processor).await {
             Ok(removed) => {
+                app.metrics.record_cleanup(heavy_len, removed);
                 info!(
                     "cleanup cycle: candidates={candidates_len}, heavy={heavy_len}, removed={removed}"
                 );
             }
             Err(e) => {
+                app.metrics.record_cleanup(heavy_len, 0);
                 debug!("cleanup cycle failed: {e}");
             }
         }

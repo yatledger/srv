@@ -86,7 +86,7 @@ pub struct StoredSnapshot {
 /// Note that we are using `serde` to serialize the
 /// `data`, which has a implementation to be serialized. Note that for this test we set both the key
 /// and value as String, but you could set any type of value that has the serialization impl.
-#[derive(Serialize, Deserialize, Debug, Default, Clone)]
+#[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct StateMachineData {
     pub last_applied: Option<LogId>,
 
@@ -94,6 +94,47 @@ pub struct StateMachineData {
 
     /// Application data.
     pub dag: Dag,
+
+    /// Версия схемы состояния (O6). Старые снапшоты без поля читаются как 0
+    /// и мигрируют к текущей версии при загрузке.
+    #[serde(default)]
+    pub schema_version: u32,
+}
+
+/// Текущая версия схемы состояния. Увеличивается при несовместимом изменении
+/// формата; старые снапшоты прогоняются через [`StateMachineData::migrate`].
+pub const SCHEMA_VERSION: u32 = 2;
+
+impl Default for StateMachineData {
+    fn default() -> Self {
+        Self {
+            last_applied: None,
+            last_membership: StoredMembership::default(),
+            dag: Dag::default(),
+            schema_version: SCHEMA_VERSION,
+        }
+    }
+}
+
+impl StateMachineData {
+    /// Приводит загруженное состояние к текущей версии схемы (O6).
+    ///
+    /// Версия «из будущего» — ошибка (узел не должен молча портить данные).
+    /// Для версии ниже текущей выполняются шаги миграции; версия 0 → 2
+    /// тождественна, т.к. `Dag` уже восстанавливает `added`/`added_seq`.
+    pub fn migrate(mut self) -> Result<Self, String> {
+        if self.schema_version > SCHEMA_VERSION {
+            return Err(format!(
+                "state schema version {} is newer than supported {}",
+                self.schema_version, SCHEMA_VERSION
+            ));
+        }
+        if self.schema_version < SCHEMA_VERSION {
+            // Место для будущих несовместимых миграций формата.
+            self.schema_version = SCHEMA_VERSION;
+        }
+        Ok(self)
+    }
 }
 
 /// Defines a state machine for the Raft cluster. This state machine represents a copy of the
@@ -131,6 +172,8 @@ impl StateMachineStore {
             Some(bytes) => serde_json::from_slice(&bytes).map_err(|e| e.to_string())?,
             None => StateMachineData::default(),
         };
+        // O6: мигрируем схему до текущей версии (старые снапшоты → SCHEMA_VERSION).
+        let state_machine = state_machine.migrate()?;
 
         Ok(Arc::new(Self {
             state_machine: RwLock::new(state_machine),
@@ -354,7 +397,11 @@ impl RaftStateMachine<TypeConfig> for Arc<StateMachineStore> {
 
         // Update the state machine.
         {
-            let updated_state_machine: StateMachineData = new_snapshot.data.clone();
+            let updated_state_machine: StateMachineData = new_snapshot
+                .data
+                .clone()
+                .migrate()
+                .map_err(|e| sm_storage_error(openraft::ErrorVerb::Write, e))?;
             self.persist(&updated_state_machine)
                 .map_err(|e| sm_storage_error(openraft::ErrorVerb::Write, e))?;
             let mut state_machine = self.state_machine.write().await;
@@ -760,5 +807,81 @@ mod tests {
                 .contains_node(&Hash::from("child")),
             "невалидная команда не меняет DAG"
         );
+    }
+
+    #[test]
+    fn migrate_accepts_current_version() {
+        let data = StateMachineData::default();
+        assert_eq!(data.schema_version, SCHEMA_VERSION);
+        let migrated = data.migrate().unwrap();
+        assert_eq!(migrated.schema_version, SCHEMA_VERSION);
+    }
+
+    #[test]
+    fn migrate_upgrades_legacy_and_rejects_future() {
+        // Старый снапшот без версии читается как версия 0 и мигрирует к текущей.
+        let data = StateMachineData {
+            schema_version: 0,
+            ..Default::default()
+        };
+        let migrated = data.migrate().unwrap();
+        assert_eq!(migrated.schema_version, SCHEMA_VERSION);
+
+        // Версия «из будущего» — ошибка.
+        let future = StateMachineData {
+            schema_version: SCHEMA_VERSION + 1,
+            ..Default::default()
+        };
+        assert!(future.migrate().is_err());
+    }
+
+    #[tokio::test]
+    async fn legacy_state_file_without_schema_version_loads() {
+        // Имитируем старый снапшот: JSON без поля schema_version.
+        let path = temp_path("legacy-schema");
+        let mut legacy = serde_json::to_value(StateMachineData::default()).unwrap();
+        legacy.as_object_mut().unwrap().remove("schema_version");
+        {
+            let db = Db::open(&path).unwrap();
+            db.meta_set(
+                KEY_SM_SNAPSHOT,
+                serde_json::to_vec(&legacy).unwrap().as_slice(),
+            )
+            .unwrap();
+        }
+        let store = StateMachineStore::open(&path).expect("старый снапшот должен загрузиться");
+        let sm = store.state_machine.read().await;
+        assert_eq!(sm.schema_version, SCHEMA_VERSION);
+    }
+
+    #[tokio::test]
+    async fn file_level_backup_and_restore_preserves_state() {
+        // O5: процедура бэкапа сводится к копии DATA_DIR; проверяем, что копия
+        // корректно открывается и сохраняет DAG.
+        let path = temp_path("backup-source");
+        let node = Hash::from("backup-node");
+        {
+            let store = StateMachineStore::open(&path).unwrap();
+            let mut sm = store.state_machine.write().await;
+            sm.dag
+                .add_node_with_parents(
+                    node.clone(),
+                    valid_tx_var(),
+                    String::new(),
+                    Func::TransferToken,
+                )
+                .unwrap();
+            store.persist(&sm).unwrap();
+        }
+
+        // «Бэкап»: копируем файл данных.
+        let backup = path.with_extension("backup.redb");
+        std::fs::copy(&path, &backup).unwrap();
+
+        // «Восстановление»: открываем копию и видим тот же узел.
+        let restored = StateMachineStore::open(&backup).unwrap();
+        let sm = restored.state_machine.read().await;
+        assert!(sm.dag.contains_node(&node));
+        assert_eq!(sm.schema_version, SCHEMA_VERSION);
     }
 }

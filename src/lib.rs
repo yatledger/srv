@@ -14,14 +14,18 @@ use std::sync::Arc;
 use redis::aio::ConnectionManager;
 
 pub mod app;
+pub mod audit;
 pub mod auth;
 pub mod cleanup;
 pub mod config;
 pub mod domain;
-mod graph;
+pub mod graph;
+pub mod metrics;
 pub mod processor;
 mod raft;
+pub mod ratelimit;
 pub mod server;
+pub mod shutdown;
 pub mod tx_logic;
 pub mod utils;
 pub mod web;
@@ -58,6 +62,39 @@ pub struct Tx {
     var: Value,
 }
 
+impl Tx {
+    /// Конструирует транзакцию из полей (публичный конструктор для внешних
+    /// тестов/бенчмарков; в рантайме транзакции приходят из JSON).
+    pub fn new(prnts: Vec<Hash>, addr: Address, seq: u32, var: Value) -> Self {
+        Self {
+            prnts,
+            addr,
+            seq,
+            var,
+        }
+    }
+
+    /// Хэши родительских транзакций.
+    pub fn parents(&self) -> &[Hash] {
+        &self.prnts
+    }
+
+    /// Публичный адрес отправителя.
+    pub fn address(&self) -> &Address {
+        &self.addr
+    }
+
+    /// Порядковый номер.
+    pub fn sequence(&self) -> u32 {
+        self.seq
+    }
+
+    /// Данные вызова.
+    pub fn var(&self) -> &Value {
+        &self.var
+    }
+}
+
 openraft::declare_raft_types!(
     /// Конфигурация типов Raft для `dagdb`: команды, ответы и данные снапшота.
     pub TypeConfig:
@@ -68,7 +105,9 @@ openraft::declare_raft_types!(
 
 /// Собирает и запускает узел Raft: персистентные хранилища, сеть, Redis и
 /// [`App`]. Возвращает дескриптор Raft и состояние приложения.
-pub async fn start_raft(cfg: &AppConfig) -> Result<(typ::Raft, App), Box<dyn std::error::Error>> {
+pub async fn start_raft(
+    cfg: &AppConfig,
+) -> Result<(typ::Raft, App), Box<dyn std::error::Error + Send + Sync>> {
     let node_id = cfg.id;
     let http_addr = cfg.advertise_addr();
 
@@ -132,6 +171,13 @@ pub async fn start_raft(cfg: &AppConfig) -> Result<(typ::Raft, App), Box<dyn std
         cfg.processor_interval(),
         cfg.weight_threshold,
         cfg.cleanup_batch_size,
+        std::sync::Arc::new(crate::metrics::Metrics::new()),
+        std::sync::Arc::new(crate::ratelimit::RateLimiter::new(
+            cfg.public_rate_limit_per_sec,
+            cfg.public_rate_limit_burst,
+        )),
+        cfg.max_request_bytes(),
+        crate::shutdown::Shutdown::new().0,
     );
 
     Ok((raft, app))
