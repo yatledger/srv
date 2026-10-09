@@ -124,6 +124,35 @@ pub async fn start_raft(
 
     let config = Arc::new(config.validate()?);
 
+    // Подключаем Redis до открытия хранилищ и запуска Raft: при недоступном или
+    // неверно сконфигурированном Redis узел должен завершиться с понятной ошибкой,
+    // не удерживая redb-блокировки и не поднимая HTTP (F1). Клиент `redis` 0.32
+    // может не вернуть ошибку в этих сценариях, поэтому таймаут — на уровне
+    // приложения.
+    let redis_url = cfg.redis_url()?;
+    let redis_client = redis::Client::open(redis_url)
+        .map_err(|e| std::io::Error::other(format!("не удалось разобрать REDIS_URL: {e}")))?;
+    let connect = ConnectionManager::new(redis_client);
+    let redis = match tokio::time::timeout(cfg.redis_connect_timeout(), connect).await {
+        Ok(Ok(manager)) => manager,
+        Ok(Err(e)) => {
+            return Err(std::io::Error::other(format!(
+                "Redis connection failed: {e} (проверьте REDIS_URL и доступность Redis)"
+            ))
+            .into());
+        }
+        Err(_) => {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::TimedOut,
+                format!(
+                    "Redis connection failed: превышен таймаут {} с (проверьте REDIS_URL и доступность Redis)",
+                    cfg.redis_connect_timeout_secs
+                ),
+            )
+            .into());
+        }
+    };
+
     // Персистентные хранилища: Raft-лог и state machine живут в DATA_DIR.
     let data_dir = cfg.data_dir.clone();
     std::fs::create_dir_all(&data_dir)?;
@@ -155,11 +184,6 @@ pub async fn start_raft(
         internal_api_token.to_string(),
     )?;
 
-    // Настраиваем подключение к Redis: строка подключения приходит только из окружения.
-    let redis_url = cfg.redis_url()?;
-    let redis_client = redis::Client::open(redis_url)?;
-    let redis = ConnectionManager::new(redis_client).await?;
-
     let app = App::new(
         node_id,
         http_addr,
@@ -182,4 +206,49 @@ pub async fn start_raft(
     );
 
     Ok((raft, app))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::{LogFormat, Profile};
+    use std::path::PathBuf;
+    use std::time::Duration;
+
+    fn config_with_redis(redis_url: &str, timeout_secs: u64) -> AppConfig {
+        AppConfig {
+            id: 1,
+            profile: Profile::Dev,
+            log_format: LogFormat::Text,
+            addr: "127.0.0.1".to_string(),
+            port: 21001,
+            bind_addr: None,
+            advertise_addr: None,
+            data_dir: PathBuf::from("./data/test-redis-timeout"),
+            redis_url: Some(redis_url.to_string()),
+            internal_api_token: Some("token".to_string()),
+            trust_proxy: false,
+            http_timeout_secs: 10,
+            http_connect_timeout_secs: 3,
+            raft_http_timeout_secs: 30,
+            raft_connect_timeout_secs: 10,
+            redis_connect_timeout_secs: timeout_secs,
+            processor_interval_ms: 250,
+            weight_threshold: 0.5,
+            cleanup_batch_size: 100,
+            public_rate_limit_per_sec: 50,
+            public_rate_limit_burst: 100,
+            max_request_bytes: 1_048_576,
+        }
+    }
+
+    /// F1: при недоступном Redis `start_raft` обязан вернуть ошибку в пределах
+    /// таймаута, а не зависнуть. Адрес `127.0.0.1:1` заведомо не слушает.
+    #[tokio::test]
+    async fn start_raft_fails_fast_when_redis_unreachable() {
+        let cfg = config_with_redis("redis://127.0.0.1:1/0", 1);
+        let result = tokio::time::timeout(Duration::from_secs(10), start_raft(&cfg)).await;
+        let result = result.expect("start_raft завис: не уложился в 10 с при таймауте Redis 1 с");
+        assert!(result.is_err(), "ожидалась ошибка подключения к Redis");
+    }
 }

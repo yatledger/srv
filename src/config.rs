@@ -125,6 +125,11 @@ pub struct AppConfig {
     #[arg(long, env = "RAFT_CONNECT_TIMEOUT_SECS", default_value_t = 10)]
     pub raft_connect_timeout_secs: u64,
 
+    /// Таймаут подключения к Redis при старте, секунды. При недоступном/неверно
+    /// сконфигурированном Redis узел завершается с понятной ошибкой, а не зависает.
+    #[arg(long, env = "REDIS_CONNECT_TIMEOUT_SECS", default_value_t = 5)]
+    pub redis_connect_timeout_secs: u64,
+
     /// Интервал фоновой очистки «тяжёлых» узлов, миллисекунды.
     #[arg(long, env = "PROCESSOR_INTERVAL_MS", default_value_t = 250)]
     pub processor_interval_ms: u64,
@@ -228,6 +233,11 @@ impl AppConfig {
         Duration::from_secs(self.raft_connect_timeout_secs)
     }
 
+    /// Таймаут подключения к Redis при старте.
+    pub fn redis_connect_timeout(&self) -> Duration {
+        Duration::from_secs(self.redis_connect_timeout_secs)
+    }
+
     /// Интервал фоновой очистки.
     pub fn processor_interval(&self) -> Duration {
         Duration::from_millis(self.processor_interval_ms)
@@ -262,6 +272,9 @@ impl AppConfig {
         }
         if self.processor_interval_ms == 0 {
             problems.push("PROCESSOR_INTERVAL_MS: должен быть больше 0".to_string());
+        }
+        if self.redis_connect_timeout_secs == 0 {
+            problems.push("REDIS_CONNECT_TIMEOUT_SECS: должен быть больше 0".to_string());
         }
         if self.max_request_bytes == 0 {
             problems.push("MAX_REQUEST_BYTES: должен быть больше 0".to_string());
@@ -335,6 +348,7 @@ mod tests {
             http_connect_timeout_secs: 3,
             raft_http_timeout_secs: 30,
             raft_connect_timeout_secs: 10,
+            redis_connect_timeout_secs: 5,
             processor_interval_ms: 250,
             weight_threshold: 0.5,
             cleanup_batch_size: 100,
@@ -361,6 +375,20 @@ mod tests {
     fn bind_addr_falls_back_to_port() {
         let cfg = base_config();
         assert_eq!(cfg.bind_addr(), "0.0.0.0:21001");
+    }
+
+    #[test]
+    fn redis_connect_timeout_default_is_five_seconds() {
+        let cfg = base_config();
+        assert_eq!(cfg.redis_connect_timeout(), Duration::from_secs(5));
+    }
+
+    #[test]
+    fn validate_rejects_zero_redis_connect_timeout() {
+        let mut cfg = base_config();
+        cfg.redis_connect_timeout_secs = 0;
+        let err = cfg.validate().unwrap_err();
+        assert!(err.message.contains("REDIS_CONNECT_TIMEOUT_SECS"));
     }
 
     #[test]

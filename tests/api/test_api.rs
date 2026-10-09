@@ -54,6 +54,7 @@ async fn start_node(redis_url: &str) -> Harness {
         http_connect_timeout_secs: 3,
         raft_http_timeout_secs: 30,
         raft_connect_timeout_secs: 10,
+        redis_connect_timeout_secs: 5,
         processor_interval_ms: 1000,
         weight_threshold: 0.9,
         cleanup_batch_size: 100,

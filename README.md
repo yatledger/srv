@@ -107,6 +107,7 @@ cp .env.example .env
 | `HTTP_CONNECT_TIMEOUT_SECS` | — | `3` | Таймаут установки HTTP-соединения |
 | `RAFT_HTTP_TIMEOUT_SECS` | — | `30` | Таймаут Raft HTTP-запросов |
 | `RAFT_CONNECT_TIMEOUT_SECS` | — | `10` | Таймаут установки Raft HTTP-соединения |
+| `REDIS_CONNECT_TIMEOUT_SECS` | — | `5` | Таймаут подключения к Redis при старте |
 | `PROCESSOR_INTERVAL_MS` | — | `250` | Интервал фоновой очистки «тяжёлых» узлов |
 | `WEIGHT_THRESHOLD` | — | `0.5` | Порог веса (после насыщения) для удаления узла |
 | `CLEANUP_BATCH_SIZE` | — | `100` | Размер батча кандидатов на очистку за цикл |
@@ -129,11 +130,18 @@ docker compose up --build
 
 ### Локально
 
-1. Запустите Redis:
+1. Запустите Redis **с паролем**, совпадающим с `REDIS_URL` в `.env`
+   (значение `CHANGE_ME` в `.env.example` замените на свой пароль):
 
    ```bash
-   docker run -d --name dagdb-redis -p 6379:6379 redis:7-alpine
+   docker run -d --name dagdb-redis -p 6379:6379 redis:7-alpine \
+     redis-server --requirepass "$REDIS_PASSWORD"
    ```
+
+   Пароль подставляется из переменной `REDIS_PASSWORD`; строка в `.env` имеет вид
+   `REDIS_URL=redis://:$REDIS_PASSWORD@localhost:6379/0`. Если Redis запущен без
+   пароля, используйте URL без части пароля: `REDIS_URL=redis://localhost:6379/0`
+   (иначе узел завершится ошибкой подключения).
 
 2. Запустите 4 узла (каждый — в своём терминале) с разными `NODE_ID`/портами:
 
