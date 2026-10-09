@@ -13,10 +13,12 @@ use crate::NodeId;
 #[derive(Debug, Clone)]
 pub struct Router {
     client: Client,
+    /// Кластерный токен, добавляемый к внутренним Raft-запросам.
+    internal_token: String,
 }
 
 impl Router {
-    pub fn new(timeout: Duration, connect_timeout: Duration) -> Self {
+    pub fn new(timeout: Duration, connect_timeout: Duration, internal_token: String) -> Self {
         let client = Client::builder()
             .timeout(timeout)
             .connect_timeout(connect_timeout)
@@ -25,7 +27,10 @@ impl Router {
             .build()
             .expect("Failed to create HTTP client");
 
-        Router { client }
+        Router {
+            client,
+            internal_token,
+        }
     }
 
     /// Унифицированный метод отправки запросов
@@ -68,10 +73,16 @@ impl Router {
         url: &str,
         req: &Req,
     ) -> Result<reqwest::Response, Unreachable> {
-        self.client.post(url).json(req).send().await.map_err(|e| {
-            error!("Failed to send request to {}: {}", url, e);
-            Unreachable::new(&e)
-        })
+        self.client
+            .post(url)
+            .header(crate::auth::INTERNAL_TOKEN_HEADER, &self.internal_token)
+            .json(req)
+            .send()
+            .await
+            .map_err(|e| {
+                error!("Failed to send request to {}: {}", url, e);
+                Unreachable::new(&e)
+            })
     }
 
     /// Чтение тела ответа
@@ -187,6 +198,10 @@ impl Router {
 
 impl Default for Router {
     fn default() -> Self {
-        Self::new(Duration::from_secs(30), Duration::from_secs(10))
+        Self::new(
+            Duration::from_secs(30),
+            Duration::from_secs(10),
+            String::new(),
+        )
     }
 }

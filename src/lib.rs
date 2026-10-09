@@ -72,7 +72,12 @@ pub async fn start_raft(cfg: &AppConfig) -> Result<(typ::Raft, App), Box<dyn std
     let log_store = PersistentLogStore::open(&data_dir.join("raft-log.redb"))?;
     let state_machine_store = StateMachineStore::open(&data_dir.join("state-machine.redb"))?;
 
-    let raft_router = RaftRouter::new(cfg.raft_http_timeout(), cfg.raft_connect_timeout());
+    let internal_api_token: Arc<str> = Arc::from(cfg.internal_api_token()?);
+    let raft_router = RaftRouter::new(
+        cfg.raft_http_timeout(),
+        cfg.raft_connect_timeout(),
+        internal_api_token.to_string(),
+    );
     let network = NetworkFactory::new(raft_router);
 
     // Create a local raft instance.
@@ -85,7 +90,6 @@ pub async fn start_raft(cfg: &AppConfig) -> Result<(typ::Raft, App), Box<dyn std
     )
     .await?;
 
-    let internal_api_token: Arc<str> = Arc::from(cfg.internal_api_token()?);
     let router = web::Router::new(
         cfg.http_timeout(),
         cfg.http_connect_timeout(),
