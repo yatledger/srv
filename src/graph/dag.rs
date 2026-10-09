@@ -2,15 +2,17 @@
 // HashMap используется для хранения списка смежности, а HashSet — для проверки циклов в DFS.
 use std::collections::{HashMap, HashSet};
 
-use std::sync::{Arc};
-use serde::{Deserialize, Serialize};
-use serde::ser::{Serializer, SerializeMap};
-use serde::de::{Deserializer, MapAccess, Visitor};
-use std::fmt;
-use serde_json::{Value, json};
-use crate::graph::weights::{NodeInfo, NodeDepth, compute_descendants_with_depth_and_weight, get_nodes_by_depth};
 use crate::Adjacency;
 use crate::Tx;
+use crate::graph::weights::{
+    NodeDepth, NodeInfo, compute_descendants_with_depth_and_weight, get_nodes_by_depth,
+};
+use serde::de::{Deserializer, MapAccess, Visitor};
+use serde::ser::{SerializeMap, Serializer};
+use serde::{Deserialize, Serialize};
+use serde_json::{Value, json};
+use std::fmt;
+use std::sync::Arc;
 
 #[derive(Debug, Clone, Default)]
 pub struct Node {
@@ -42,8 +44,7 @@ pub struct TxVar {
 
 pub fn extract_from_var_struct(tx: &Tx) -> Result<TxVar, String> {
     // Десериализуем `var` в структуру `TxData`
-    serde_json::from_value(tx.var.clone())
-        .map_err(|e| format!("Failed to deserialize var: {}", e))
+    serde_json::from_value(tx.var.clone()).map_err(|e| format!("Failed to deserialize var: {}", e))
 }
 
 impl DAG {
@@ -54,8 +55,13 @@ impl DAG {
         }
     }
 
-    pub fn add_node_with_parents(&mut self, tx_hash: Arc<str>, tx: Tx, sign: String, func: String) -> Result<(), String> {
-
+    pub fn add_node_with_parents(
+        &mut self,
+        tx_hash: Arc<str>,
+        tx: Tx,
+        sign: String,
+        func: String,
+    ) -> Result<(), String> {
         let (ca, to, val, msg) = if func == "transferToken" {
             // .unwrap() здесь безопасен, если мы доверяем валидации на входе
             let TxVar { ca, to, val, msg } = extract_from_var_struct(&tx).unwrap();
@@ -63,13 +69,14 @@ impl DAG {
         } else {
             (None, None, None, None)
         };
-        
-        let existing_parents: HashSet<Arc<str>> = tx.prnts
+
+        let existing_parents: HashSet<Arc<str>> = tx
+            .prnts
             .iter()
             .filter(|p| self.nodes.contains_key(p.as_ref()))
             .cloned()
             .collect();
-        
+
         if !existing_parents.is_empty() {
             // Проходим по каждому существующему родителю и добавляем ребро от него к новому узлу.
             for parent_hash in &existing_parents {
@@ -90,7 +97,7 @@ impl DAG {
                 "ca": ca.as_ref(),
                 "to": to.as_ref(),
                 "val": val,
-                "msg": msg,   
+                "msg": msg,
             }
         });
         let timestamp = std::time::SystemTime::now()
@@ -135,7 +142,7 @@ impl DAG {
             .map(|(hash, node)| (hash.clone(), node.children.iter().cloned().collect()))
             .collect()
     }
-    
+
     // Метод теперь "на лету" собирает список смежности родителей.
     pub fn get_parents(&self) -> Adjacency {
         self.nodes
@@ -146,7 +153,8 @@ impl DAG {
 
     pub fn get_time(&self) -> Vec<NodeTime> {
         // Собираем узлы с их временными метками в вектор
-        let mut nodes = self.nodes
+        let mut nodes = self
+            .nodes
             .iter()
             .map(|(hash, node)| NodeTime {
                 node: hash.clone(),
@@ -216,17 +224,18 @@ impl DAG {
     }
 
     pub fn compute_weights_for_batch(&self, nodes: &[Arc<str>]) -> HashMap<Arc<str>, f64> {
-       // Преобразуем срез узлов в HashSet для совместимости с compute_descendants_with_depth_and_weight
-       let nodes_to_process: HashSet<Arc<str>> = nodes.iter().cloned().collect();
-       // Вызываем существующую функцию для вычисления потомков с весами
-       let descendants_map = compute_descendants_with_depth_and_weight(&self.nodes, &nodes_to_process);
-       // Агрегируем веса потомков для каждого узла
-       let mut weights = HashMap::new();
-       for (node, descendants) in descendants_map {
-           let total_weight: f64 = descendants.iter().map(|d| d.weight).sum();
-           weights.insert(node, total_weight);
-       }
-       weights
+        // Преобразуем срез узлов в HashSet для совместимости с compute_descendants_with_depth_and_weight
+        let nodes_to_process: HashSet<Arc<str>> = nodes.iter().cloned().collect();
+        // Вызываем существующую функцию для вычисления потомков с весами
+        let descendants_map =
+            compute_descendants_with_depth_and_weight(&self.nodes, &nodes_to_process);
+        // Агрегируем веса потомков для каждого узла
+        let mut weights = HashMap::new();
+        for (node, descendants) in descendants_map {
+            let total_weight: f64 = descendants.iter().map(|d| d.weight).sum();
+            weights.insert(node, total_weight);
+        }
+        weights
     }
 }
 
@@ -237,8 +246,22 @@ impl Serialize for Node {
         S: Serializer,
     {
         let mut map = serializer.serialize_map(Some(4))?;
-        map.serialize_entry("parents", &self.parents.iter().map(|arc| arc.as_ref()).collect::<Vec<&str>>())?;
-        map.serialize_entry("children", &self.children.iter().map(|arc| arc.as_ref()).collect::<Vec<&str>>())?;
+        map.serialize_entry(
+            "parents",
+            &self
+                .parents
+                .iter()
+                .map(|arc| arc.as_ref())
+                .collect::<Vec<&str>>(),
+        )?;
+        map.serialize_entry(
+            "children",
+            &self
+                .children
+                .iter()
+                .map(|arc| arc.as_ref())
+                .collect::<Vec<&str>>(),
+        )?;
         map.serialize_entry("data", &self.data)?;
         map.serialize_entry("time", &self.time)?;
         map.end()
@@ -281,7 +304,9 @@ impl<'de> Deserialize<'de> for Node {
                         }
                         "data" => data = Some(map.next_value::<Value>()?),
                         "time" => time = Some(map.next_value()?),
-                        _ => { let _ = map.next_value::<serde_json::Value>()?; }
+                        _ => {
+                            let _ = map.next_value::<serde_json::Value>()?;
+                        }
                     }
                 }
 
@@ -294,7 +319,11 @@ impl<'de> Deserialize<'de> for Node {
             }
         }
 
-        deserializer.deserialize_struct("Node", &["parents", "children", "data", "time"], NodeVisitor)
+        deserializer.deserialize_struct(
+            "Node",
+            &["parents", "children", "data", "time"],
+            NodeVisitor,
+        )
     }
 }
 
@@ -341,17 +370,23 @@ impl<'de> Deserialize<'de> for DAG {
                             // Десериализуем nodes как HashMap<String, Node>
                             let nodes_map: HashMap<String, Node> = map.next_value()?;
                             // Преобразуем ключи String в Arc<str>
-                            nodes = Some(nodes_map.into_iter()
-                                .map(|(k, v)| (Arc::from(k.as_str()), v))
-                                .collect());
+                            nodes = Some(
+                                nodes_map
+                                    .into_iter()
+                                    .map(|(k, v)| (Arc::from(k.as_str()), v))
+                                    .collect(),
+                            );
                         }
                         "added" => {
                             // Десериализуем added как HashMap<String, u64>
                             let added_map: HashMap<String, u64> = map.next_value()?;
                             // Преобразуем ключи String в Arc<str>
-                            added = Some(added_map.into_iter()
-                                .map(|(k, v)| (Arc::from(k.as_str()), v))
-                                .collect());
+                            added = Some(
+                                added_map
+                                    .into_iter()
+                                    .map(|(k, v)| (Arc::from(k.as_str()), v))
+                                    .collect(),
+                            );
                         }
                         // Игнорируем неизвестные поля
                         _ => {

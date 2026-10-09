@@ -1,31 +1,31 @@
 use axum::{
-    extract::{Json, State, DefaultBodyLimit},
-    http::StatusCode,
-    routing::{post, get},
     Router,
+    extract::{DefaultBodyLimit, Json, State},
+    http::StatusCode,
+    routing::{get, post},
 };
 
 use std::fs; // Для чтения файла.
 
-use std::sync::Arc;
 use serde::{Deserialize, Serialize};
+use std::sync::Arc;
 use tokio::net::TcpListener;
-use tracing::{info, error, debug};
+use tracing::{debug, error, info};
 
 use redis::pipe;
 
 use crate::Tx;
+use crate::app::App;
 use crate::raft;
 use crate::utils::*;
-use crate::app::App;
 use raft::api::*;
 use raft::command::Request;
 
-use crate::web::ApiResponse;
 use crate::graph::weights::NodeDepth;
+use crate::web::ApiResponse;
 
-use ed25519_dalek::{VerifyingKey, Signature, Verifier};
 use base58::FromBase58;
+use ed25519_dalek::{Signature, Verifier, VerifyingKey};
 use hex::FromHex;
 
 #[derive(Deserialize, Serialize, Debug)]
@@ -42,7 +42,10 @@ async fn validate_and_prepare_tx(
     if let Err(err) = validate_parents(&payload.tx.prnts) {
         return Err((
             StatusCode::BAD_REQUEST,
-            Json(ApiResponse::Error { status: "error".to_string(), message: err }),
+            Json(ApiResponse::Error {
+                status: "error".to_string(),
+                message: err,
+            }),
         ));
     }
 
@@ -52,18 +55,24 @@ async fn validate_and_prepare_tx(
         Err(e) => {
             return Err((
                 StatusCode::INTERNAL_SERVER_ERROR,
-                Json(ApiResponse::Error { status: "error".to_string(), message: format!("Ordered sum error: {}", e) }),
+                Json(ApiResponse::Error {
+                    status: "error".to_string(),
+                    message: format!("Ordered sum error: {}", e),
+                }),
             ));
         }
     };
-    
+
     // Проверка самой подписи
     let signature_bytes = match <[u8; 64]>::from_hex(payload.sign.as_str()) {
         Ok(bytes) => bytes,
         Err(_) => {
             return Err((
                 StatusCode::BAD_REQUEST,
-                Json(ApiResponse::Error { status: "error".to_string(), message: "Invalid hex for signature".to_string() }),
+                Json(ApiResponse::Error {
+                    status: "error".to_string(),
+                    message: "Invalid hex for signature".to_string(),
+                }),
             ));
         }
     };
@@ -73,19 +82,25 @@ async fn validate_and_prepare_tx(
         Err(_) => {
             return Err((
                 StatusCode::BAD_REQUEST,
-                Json(ApiResponse::Error { status: "error".to_string(), message: "Invalid signature format".to_string() }),
+                Json(ApiResponse::Error {
+                    status: "error".to_string(),
+                    message: "Invalid signature format".to_string(),
+                }),
             ));
         }
     };
-    
+
     let addr_bytes = match payload.tx.addr.from_base58() {
-         Ok(bytes) => bytes,
-         Err(_) => {
+        Ok(bytes) => bytes,
+        Err(_) => {
             return Err((
                 StatusCode::BAD_REQUEST,
-                Json(ApiResponse::Error { status: "error".to_string(), message: "Invalid base58 in signature verification".to_string() }),
+                Json(ApiResponse::Error {
+                    status: "error".to_string(),
+                    message: "Invalid base58 in signature verification".to_string(),
+                }),
             ));
-         }
+        }
     };
 
     let addr_array: [u8; 32] = match addr_bytes.try_into() {
@@ -93,7 +108,10 @@ async fn validate_and_prepare_tx(
         Err(_) => {
             return Err((
                 StatusCode::BAD_REQUEST,
-                Json(ApiResponse::Error { status: "error".to_string(), message: "Invalid Ed25519 key length".to_string() }),
+                Json(ApiResponse::Error {
+                    status: "error".to_string(),
+                    message: "Invalid Ed25519 key length".to_string(),
+                }),
             ));
         }
     };
@@ -103,15 +121,24 @@ async fn validate_and_prepare_tx(
         Err(_) => {
             return Err((
                 StatusCode::BAD_REQUEST,
-                Json(ApiResponse::Error { status: "error".to_string(), message: "Invalid Ed25519 public key".to_string() }),
+                Json(ApiResponse::Error {
+                    status: "error".to_string(),
+                    message: "Invalid Ed25519 public key".to_string(),
+                }),
             ));
         }
     };
 
-    if verify_key.verify(tx_hash_bytes.as_bytes(), &signature).is_err() {
+    if verify_key
+        .verify(tx_hash_bytes.as_bytes(), &signature)
+        .is_err()
+    {
         return Err((
             StatusCode::BAD_REQUEST,
-            Json(ApiResponse::Error { status: "error".to_string(), message: "Signature verification failed".to_string() }),
+            Json(ApiResponse::Error {
+                status: "error".to_string(),
+                message: "Signature verification failed".to_string(),
+            }),
         ));
     }
 
@@ -124,16 +151,22 @@ async fn validate_and_prepare_tx(
     if state_machine.dag.contains_node(&tx_hash) {
         return Err((
             StatusCode::BAD_REQUEST,
-            Json(ApiResponse::Error { status: "error".to_string(), message: "Node already exists".to_string() }),
+            Json(ApiResponse::Error {
+                status: "error".to_string(),
+                message: "Node already exists".to_string(),
+            }),
         ));
     }
-    
+
     // Проверяем, что каждый родитель существует
     for parent in &payload.tx.prnts {
         if !state_machine.dag.contains_node(parent) && !state_machine.dag.is_node_added(parent) {
-             return Err((
+            return Err((
                 StatusCode::BAD_REQUEST,
-                Json(ApiResponse::Error { status: "error".to_string(), message: format!("Parent {} does not exist", parent) }),
+                Json(ApiResponse::Error {
+                    status: "error".to_string(),
+                    message: format!("Parent {} does not exist", parent),
+                }),
             ));
         }
     }
@@ -154,7 +187,6 @@ async fn add_tx(
     State(app): State<App>,
     Json(payload): Json<TxRead>,
 ) -> (StatusCode, Json<ApiResponse<StandardResponse>>) {
-
     let tx_hash = match validate_and_prepare_tx(&app, &payload).await {
         Ok(hash) => hash,
         Err(response) => return response,
@@ -177,11 +209,11 @@ async fn add_tx(
     };
 
     let internal_payload = InternalAddRequest {
-            hash: tx_hash,
-            tx: payload.tx,
-            sign: payload.sign,
-            func: payload.func,
-        };
+        hash: tx_hash,
+        tx: payload.tx,
+        sign: payload.sign,
+        func: payload.func,
+    };
 
     if leader_id == app.id {
         return add_handler(State(app), Json(internal_payload)).await;
@@ -195,7 +227,11 @@ async fn add_tx(
         .expect("NO LEADER ADDR");
 
     // Перенаправляем запрос лидеру
-    match app.router.send::<_, StandardResponse>(&leader_addr, "/add", internal_payload).await {
+    match app
+        .router
+        .send::<_, StandardResponse>(&leader_addr, "/add", internal_payload)
+        .await
+    {
         Ok(response) => {
             debug!("Successfully forwarded to leader at {}", leader_addr);
             (StatusCode::OK, Json(ApiResponse::Success(response)))
@@ -212,7 +248,6 @@ async fn add_tx(
             )
         }
     }
-
 }
 
 #[axum_macros::debug_handler]
@@ -220,7 +255,6 @@ async fn add_handler(
     State(app): State<App>,
     Json(payload): Json<InternalAddRequest>,
 ) -> (StatusCode, Json<ApiResponse<StandardResponse>>) {
-
     let request = Request::Add {
         hash: payload.hash,
         tx: payload.tx,
@@ -243,22 +277,19 @@ async fn add_handler(
                 Json(ApiResponse::Error {
                     status: "error".to_string(),
                     message: format!("Raft error: {}", e),
-                })
+                }),
             )
         }
     }
 }
 
-
-async fn pool_handler(
-    State(app): State<App>,
-) -> (StatusCode, Json<PoolResponse>) {
+async fn pool_handler(State(app): State<App>) -> (StatusCode, Json<PoolResponse>) {
     let state_machine = app.state_machine.state_machine.read().await;
-    
+
     /*
     // Получаем все узлы с их глубинами, уже отсортированные по глубине
     let nodes_with_time = state_machine.dag.get_time();
-    
+
     // Преобразуем в Vec<String> для ответа (узлы уже отсортированы по глубине)
     let mut nodes: Vec<String> = nodes_with_time
         .into_iter()
@@ -268,16 +299,25 @@ async fn pool_handler(
     // Получаем список смежности родителей через метод get_parents
     let parents_map = state_machine.dag.get_parents();
     // Собираем узлы и подсчитываем количество активных родителей для каждого
-    let mut nodes = state_machine.dag.get_node_keys().into_iter().map(|node| {
-        let active_parents = parents_map.get(&node)
-            .map(|parents| parents.len())
-            .unwrap_or(0);
-        (node, active_parents)
-    }).collect::<Vec<_>>();
+    let mut nodes = state_machine
+        .dag
+        .get_node_keys()
+        .into_iter()
+        .map(|node| {
+            let active_parents = parents_map
+                .get(&node)
+                .map(|parents| parents.len())
+                .unwrap_or(0);
+            (node, active_parents)
+        })
+        .collect::<Vec<_>>();
     // Сортируем по возрастанию числа активных родителей (меньше родителей — выше приоритет)
     nodes.sort_by(|a, b| a.1.cmp(&b.1));
     // Преобразуем в Vec<String> для ответа
-    let mut nodes: Vec<String> = nodes.into_iter().map(|(node, _)| String::from(&*node)).collect();
+    let mut nodes: Vec<String> = nodes
+        .into_iter()
+        .map(|(node, _)| String::from(&*node))
+        .collect();
 
     if nodes.len() > 10 {
         let target_len = (nodes.len() as f64).sqrt().ceil() as usize;
@@ -285,7 +325,7 @@ async fn pool_handler(
     } else {
         nodes.truncate(2);
     }
-    
+
     (
         StatusCode::OK,
         Json(PoolResponse {
@@ -388,7 +428,9 @@ async fn remove_heavy_nodes_handler(
     match redis_result {
         Ok(_) => {
             // Формируем запрос для Raft
-            let request = Request::Remove { nodes: nodes_to_remove };
+            let request = Request::Remove {
+                nodes: nodes_to_remove,
+            };
             // Отправляем команду на удаление в Raft
             match app.raft.client_write(request).await {
                 Ok(_response) => (
@@ -411,7 +453,10 @@ async fn remove_heavy_nodes_handler(
             }
         }
         Err(e) => {
-            error!("Failed to write batch to Redis: {}. Nodes will not be removed.", e);
+            error!(
+                "Failed to write batch to Redis: {}. Nodes will not be removed.",
+                e
+            );
             (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 Json(ApiResponse::Error {
@@ -423,9 +468,7 @@ async fn remove_heavy_nodes_handler(
     }
 }
 
-async fn get_full_graph_handler(
-    State(app): State<App>,
-) -> (StatusCode, Json<FullGraphResponse>) {
+async fn get_full_graph_handler(State(app): State<App>) -> (StatusCode, Json<FullGraphResponse>) {
     let state_machine = app.state_machine.state_machine.read().await;
     let nodes = state_machine.dag.get_nodes_by_depth();
     (
@@ -437,7 +480,6 @@ async fn get_full_graph_handler(
         }),
     )
 }
-
 
 // Структура для десериализации JSON с генезис-транзакциями.
 #[derive(Deserialize)]
@@ -489,26 +531,41 @@ pub async fn load_genesis(
 
         match app.raft.client_write(request).await {
             Ok(_) => {
-                debug!("Successfully added genesis transaction with hash {}", tx.hash);
+                debug!(
+                    "Successfully added genesis transaction with hash {}",
+                    tx.hash
+                );
             }
             Err(e) => {
-                error!("Failed to write genesis transaction {} to Raft: {}", tx.hash, e);
+                error!(
+                    "Failed to write genesis transaction {} to Raft: {}",
+                    tx.hash, e
+                );
                 errors.push(format!("Failed to add transaction {}: {}", tx.hash, e));
             }
         }
-    };
+    }
     // Проверяем, были ли ошибки
     if errors.is_empty() {
-        info!("Successfully loaded {} genesis transactions", transactions.len());
+        info!(
+            "Successfully loaded {} genesis transactions",
+            transactions.len()
+        );
         (
             StatusCode::OK,
             Json(ApiResponse::Success(StandardResponse {
                 status: "success".to_string(),
-                message: Some(format!("Loaded {} genesis transactions", transactions.len())),
+                message: Some(format!(
+                    "Loaded {} genesis transactions",
+                    transactions.len()
+                )),
             })),
         )
     } else {
-        error!("Errors occurred while loading genesis transactions: {:?}", errors);
+        error!(
+            "Errors occurred while loading genesis transactions: {:?}",
+            errors
+        );
         (
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(ApiResponse::Error {
@@ -545,17 +602,14 @@ pub struct HeavyNodesRequest {
     pub nodes: Vec<Arc<str>>,
 }
 
-pub async fn start_server(app: App, _addr: String, port: String) -> Result<(), Box<dyn std::error::Error>> {
+pub async fn start_server(app: App, bind_addr: String) -> Result<(), Box<dyn std::error::Error>> {
     let srv = Router::new()
         .route("/", post(add_tx))
         .route("/add", post(add_handler))
         .route("/remove_heavy_nodes", post(remove_heavy_nodes_handler))
-
         .route("/pool", get(pool_handler))
         .route("/full", get(get_full_graph_handler))
-
         .route("/load-genesis", post(load_genesis))
-        
         .route("/raft/vote", post(vote))
         .route("/raft/append", post(append))
         .route("/raft/snapshot", post(snapshot))
@@ -566,9 +620,8 @@ pub async fn start_server(app: App, _addr: String, port: String) -> Result<(), B
         .layer(DefaultBodyLimit::max(10 * 1024 * 1024))
         .with_state(app.clone());
 
-    let http_addr = "0.0.0.0:".to_string() + &port;
-    let listener = TcpListener::bind(http_addr.clone()).await?;
-    info!("Server running at {}", http_addr);
+    let listener = TcpListener::bind(&bind_addr).await?;
+    info!("Server running at {}", bind_addr);
 
     axum::serve(listener, srv).await?;
 

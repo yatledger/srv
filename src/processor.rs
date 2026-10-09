@@ -1,16 +1,15 @@
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::time;
-use tracing::{info, error, debug};
+use tracing::{debug, error, info};
 
 use crate::NodeId;
 use crate::raft;
+use crate::server::{HeavyNodesRequest, StandardResponse};
+use crate::web::{ApiRouterError, Router};
 use raft::store::StateMachineStore;
 use raft::typ::Raft;
-use crate::server::{HeavyNodesRequest, StandardResponse};
 use rand::seq::SliceRandom;
-use crate::web::{Router, ApiRouterError};
-
 
 // Конфигурация для пересчета весов и очистки
 const UPDATE_INTERVAL: Duration = Duration::from_millis(250); // Интервал пересчета весов и очистки (1 секунда)
@@ -18,7 +17,12 @@ const WEIGHT_THRESHOLD: f64 = 5.0; // Порог веса для удалени�
 const BATCH_SIZE: usize = 100; // Количество узлов для проверки за один раз
 
 // Запускает фоновую задачу для пересчета весов узлов DAG и очистки узлов с весами выше порога
-pub async fn start_processor(sm: Arc<StateMachineStore>, raft: Raft, node_id: NodeId, router: Router) {
+pub async fn start_processor(
+    sm: Arc<StateMachineStore>,
+    raft: Raft,
+    node_id: NodeId,
+    router: Router,
+) {
     // Создаем интервал для периодического запуска
     let mut interval = time::interval(UPDATE_INTERVAL);
 
@@ -39,9 +43,13 @@ pub async fn start_processor(sm: Arc<StateMachineStore>, raft: Raft, node_id: No
                 continue; // Нет лидера, пропускаем итерацию
             }
         };
-        
+
         // Находим адрес лидера в конфигурации
-        let leader_addr = match metrics.membership_config.nodes().find(|(id, _)| **id == leader_id) {
+        let leader_addr = match metrics
+            .membership_config
+            .nodes()
+            .find(|(id, _)| **id == leader_id)
+        {
             Some((_, node)) => node.addr.clone(),
             None => {
                 error!("Could not find leader address for id {}", leader_id);
@@ -56,13 +64,14 @@ pub async fn start_processor(sm: Arc<StateMachineStore>, raft: Raft, node_id: No
             if all_nodes.is_empty() {
                 continue;
             }
-            
+
             (all_nodes, state_machine.dag.clone()) // TODO: сделать так везде. Клонируем DAG, чтобы освободить блокировку
         };
 
         // TODO подумать как везде вместо clone юзать ссылку
         // Фильтруем узлы, чтобы оставить только те, все ИЗНАЧАЛЬНЫЕ родители которых уже удалены.
-        let mut eligible_nodes_for_cleanup: Vec<Arc<str>> = nodes_to_process.clone()
+        let mut eligible_nodes_for_cleanup: Vec<Arc<str>> = nodes_to_process
+            .clone()
             .into_iter()
             .filter(|node_hash| {
                 // Проверяем, существует ли узел в DAG
@@ -99,34 +108,51 @@ pub async fn start_processor(sm: Arc<StateMachineStore>, raft: Raft, node_id: No
                 }
             })
             .collect();
-        
+
         // Если найдены "тяжелые" узлы, отправляем их лидеру для удаления
         if !heavy_nodes.is_empty() {
-            let req = HeavyNodesRequest { nodes: heavy_nodes.clone() };
+            let req = HeavyNodesRequest {
+                nodes: heavy_nodes.clone(),
+            };
 
             // Отправляем запрос лидеру
-            match router.send::<_, StandardResponse>(&leader_addr, "/remove_heavy_nodes", req).await {
+            match router
+                .send::<_, StandardResponse>(&leader_addr, "/remove_heavy_nodes", req)
+                .await
+            {
                 Ok(res) => {
-                    debug!("Successfully submitted heavy nodes to the leader: {:?}", res.message);
+                    debug!(
+                        "Successfully submitted heavy nodes to the leader: {:?}",
+                        res.message
+                    );
                 }
-                Err(e) => {
-                    match e {
-                        ApiRouterError::Network(net_err) => {
-                            error!("Network error while trying to contact leader: {}", net_err);
-                        }
-                        ApiRouterError::Http { status, text } => {
-                            error!("Leader returned an HTTP error {} with body: {}", status, text);
-                        }
-                        ApiRouterError::Api { message } => {
-                            error!("Leader API returned an error: {}", message);
-                        }
-                        ApiRouterError::Deserialization(serde_err) => {
-                            error!("Failed to deserialize a response from the leader: {}", serde_err);
-                        }
+                Err(e) => match e {
+                    ApiRouterError::Network(net_err) => {
+                        error!("Network error while trying to contact leader: {}", net_err);
                     }
-                }
+                    ApiRouterError::Http { status, text } => {
+                        error!(
+                            "Leader returned an HTTP error {} with body: {}",
+                            status, text
+                        );
+                    }
+                    ApiRouterError::Api { message } => {
+                        error!("Leader API returned an error: {}", message);
+                    }
+                    ApiRouterError::Deserialization(serde_err) => {
+                        error!(
+                            "Failed to deserialize a response from the leader: {}",
+                            serde_err
+                        );
+                    }
+                },
             }
         }
-        info!("{} / {} / {}", nodes_to_process.len(), eligible_len, heavy_nodes.len());
+        info!(
+            "{} / {} / {}",
+            nodes_to_process.len(),
+            eligible_len,
+            heavy_nodes.len()
+        );
     }
 }

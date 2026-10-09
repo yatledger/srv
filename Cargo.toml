@@ -17,7 +17,8 @@ tracing = "0.1.41"
 tracing-subscriber = { version = "0.3.19", features = ["env-filter", "fmt", "chrono"] }
 reqwest = { version = "0.12.20", features = ["json"] }
 axum-macros = "0.5.0"
-clap = "4.5.40"
+clap = { version = "4.5.40", features = ["derive", "env"] }
+dotenvy = "0.15"
 ed25519-dalek = "2.1.1"
 base58 = "0.2.0"
 hex = "0.4.3"

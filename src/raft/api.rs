@@ -3,15 +3,15 @@ use axum::{
     http::StatusCode,
 };
 
-use tracing::{info};
 use std::collections::{BTreeMap, BTreeSet};
+use tracing::info;
 
 use openraft::BasicNode;
 use openraft::error::decompose::DecomposeResult;
 
-use crate::raft;
 use crate::NodeId;
 use crate::app::App;
+use crate::raft;
 use raft::typ::*;
 use tracing::error;
 
@@ -33,10 +33,15 @@ pub async fn add_learner(
     info!("{} {}", req.0, req.1);
     let node_id = req.0;
     let node = BasicNode { addr: req.1 };
-    
-    let res = app.raft.add_learner(node_id, node, true).await.decompose().unwrap()
+
+    let res = app
+        .raft
+        .add_learner(node_id, node, true)
+        .await
+        .decompose()
+        .unwrap()
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-    
+
     Ok(Json(res))
 }
 
@@ -44,7 +49,11 @@ pub async fn change_membership(
     State(app): State<App>,
     Json(req): Json<BTreeSet<NodeId>>,
 ) -> Result<Json<impl serde::Serialize>, StatusCode> {
-    let res = app.raft.change_membership(req, false).await.decompose()
+    let res = app
+        .raft
+        .change_membership(req, false)
+        .await
+        .decompose()
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     Ok(Json(res))
 }
@@ -54,31 +63,37 @@ pub async fn init(
     body: String,
 ) -> Result<Json<impl serde::Serialize>, StatusCode> {
     let mut nodes = BTreeMap::new();
-    
+
     // Пытаемся распарсить, если не получается или пусто - используем дефолт
     let node_list: Vec<(NodeId, String)> = if body.trim().is_empty() {
         Vec::new()
     } else {
         serde_json::from_str(&body).map_err(|_| StatusCode::BAD_REQUEST)?
     };
-    
+
     if node_list.is_empty() {
-        nodes.insert(app.id, BasicNode { addr: app.addr.clone() });
+        nodes.insert(
+            app.id,
+            BasicNode {
+                addr: app.addr.clone(),
+            },
+        );
     } else {
         for (id, addr) in node_list.into_iter() {
             nodes.insert(id, BasicNode { addr });
         }
     };
-    
-    let res = app.raft.initialize(nodes).await.decompose()
+
+    let res = app
+        .raft
+        .initialize(nodes)
+        .await
+        .decompose()
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     Ok(Json(res))
 }
 
-
-pub async fn metrics(
-    State(app): State<App>,
-) -> Result<Json<impl serde::Serialize>, StatusCode> {
+pub async fn metrics(State(app): State<App>) -> Result<Json<impl serde::Serialize>, StatusCode> {
     let metrics = app.raft.metrics().borrow().clone();
     // let res: Result<RaftMetrics<TypeConfig>, Infallible> = Ok(metrics);
     Ok(Json(metrics))
@@ -111,22 +126,27 @@ pub async fn snapshot(
     }
 
     // Безопасная десериализация
-    let (vote, snapshot_meta, snapshot_data): (Vote, SnapshotMeta, SnapshotData) = 
-        serde_json::from_str(&req)
-            .map_err(|e| {
-                error!("Failed to deserialize snapshot request: {}", e);
-                (StatusCode::BAD_REQUEST, format!("Invalid JSON: {}", e))
-            })?;
+    let (vote, snapshot_meta, snapshot_data): (Vote, SnapshotMeta, SnapshotData) =
+        serde_json::from_str(&req).map_err(|e| {
+            error!("Failed to deserialize snapshot request: {}", e);
+            (StatusCode::BAD_REQUEST, format!("Invalid JSON: {}", e))
+        })?;
 
     let snapshot = Snapshot {
         meta: snapshot_meta,
         snapshot: snapshot_data,
     };
 
-    let res = app.raft.install_full_snapshot(vote, snapshot).await
+    let res = app
+        .raft
+        .install_full_snapshot(vote, snapshot)
+        .await
         .map_err(|e| {
             error!("Failed to install snapshot: {}", e);
-            (StatusCode::INTERNAL_SERVER_ERROR, format!("Snapshot installation failed: {}", e))
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("Snapshot installation failed: {}", e),
+            )
         })?;
 
     Ok(Json(res))

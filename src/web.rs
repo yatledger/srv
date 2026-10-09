@@ -2,8 +2,8 @@
 
 use axum::http::StatusCode;
 use reqwest::Client;
-use serde::{Deserialize, Serialize};
 use serde::de::DeserializeOwned;
+use serde::{Deserialize, Serialize};
 use std::time::Duration;
 use tracing::{debug, error};
 
@@ -43,10 +43,10 @@ pub struct Router {
 }
 
 impl Router {
-    pub fn new() -> Self {
+    pub fn new(timeout: Duration, connect_timeout: Duration) -> Self {
         let client = Client::builder()
-            .timeout(Duration::from_secs(10))
-            .connect_timeout(Duration::from_secs(3))
+            .timeout(timeout)
+            .connect_timeout(connect_timeout)
             .build()
             .expect("Failed to create HTTP client for ApiRouter");
         Self { client }
@@ -64,8 +64,16 @@ impl Router {
         Req: Serialize,
         Resp: DeserializeOwned,
     {
-        let url = format!("http://{}/{}", addr.trim_end_matches('/'), path.trim_start_matches('/'));
-        debug!(">>> API request send to {}: {}", url, serde_json::to_string(&req).unwrap());
+        let url = format!(
+            "http://{}/{}",
+            addr.trim_end_matches('/'),
+            path.trim_start_matches('/')
+        );
+        debug!(
+            ">>> API request send to {}: {}",
+            url,
+            serde_json::to_string(&req).unwrap()
+        );
 
         let response = self.client.post(&url).json(&req).send().await?;
 
@@ -73,8 +81,14 @@ impl Router {
         let body_text = response.text().await.map_err(ApiRouterError::Network)?;
 
         if !status.is_success() {
-            error!("API request HTTP error {} from {}: {}", status, url, body_text);
-            return Err(ApiRouterError::Http { status, text: body_text });
+            error!(
+                "API request HTTP error {} from {}: {}",
+                status, url, body_text
+            );
+            return Err(ApiRouterError::Http {
+                status,
+                text: body_text,
+            });
         }
 
         debug!("<<< API reply recv from {}: {}", url, body_text);
@@ -90,6 +104,6 @@ impl Router {
 
 impl Default for Router {
     fn default() -> Self {
-        Self::new()
+        Self::new(Duration::from_secs(10), Duration::from_secs(3))
     }
 }

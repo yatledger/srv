@@ -1,25 +1,27 @@
-use std::collections::HashMap;
-use std::sync::{Arc};
 use openraft::Config;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use std::collections::HashMap;
+use std::sync::Arc;
 
 use redis::aio::ConnectionManager;
 
-mod graph;
-mod raft;
 pub mod app;
+pub mod config;
+mod graph;
 pub mod processor;
+mod raft;
 pub mod server;
-pub mod web;
 pub mod utils;
+pub mod web;
 
 use crate::app::App;
-use raft::typ;
-use raft::router::Router as RaftRouter;
-use raft::network::NetworkFactory;
+use crate::config::AppConfig;
 use raft::command::{Request, Response};
-use raft::store::{StateMachineStore, StateMachineData};
+use raft::network::NetworkFactory;
+use raft::router::Router as RaftRouter;
+use raft::store::{StateMachineData, StateMachineStore};
+use raft::typ;
 
 // Псевдоним для списка смежности графа: узел -> список его детей или родителей.
 pub type Adjacency = HashMap<Arc<str>, Vec<Arc<str>>>;
@@ -44,7 +46,10 @@ openraft::declare_raft_types!(
         SnapshotData = StateMachineData,
 );
 
-pub async fn start_raft(node_id: NodeId, http_addr: String) -> (typ::Raft, App) {
+pub async fn start_raft(cfg: &AppConfig) -> Result<(typ::Raft, App), Box<dyn std::error::Error>> {
+    let node_id = cfg.id;
+    let http_addr = cfg.advertise_addr();
+
     // Create a configuration for the raft instance.
     let config = Config {
         heartbeat_interval: 2500,
@@ -56,29 +61,41 @@ pub async fn start_raft(node_id: NodeId, http_addr: String) -> (typ::Raft, App) 
         ..Default::default()
     };
 
-    let config = Arc::new(config.validate().unwrap());
+    let config = Arc::new(config.validate()?);
 
     // Create a instance of where the Raft logs will be stored.
     let log_store = LogStore::default();
 
     // Create a instance of where the state machine data will be stored.
     let state_machine_store = Arc::new(StateMachineStore::default());
-    let raft_router = RaftRouter::new();
+    let raft_router = RaftRouter::new(cfg.raft_http_timeout(), cfg.raft_connect_timeout());
     let network = NetworkFactory::new(raft_router);
 
     // Create a local raft instance.
-    let raft = openraft::Raft::new(node_id, config, network, log_store, state_machine_store.clone())
-        .await
-        .unwrap();
+    let raft = openraft::Raft::new(
+        node_id,
+        config,
+        network,
+        log_store,
+        state_machine_store.clone(),
+    )
+    .await?;
 
-    let router = web::Router::new();
+    let router = web::Router::new(cfg.http_timeout(), cfg.http_connect_timeout());
 
-    // Настраиваем подключение к Redis
-    let redis_url = "redis://:REDACTED_ROTATED_SECRET@localhost/0";
-    let redis_client = redis::Client::open(redis_url).expect("Failed to create Redis client");
-    let redis = ConnectionManager::new(redis_client).await.unwrap();
+    // Настраиваем подключение к Redis: строка подключения приходит только из окружения.
+    let redis_url = cfg.redis_url()?;
+    let redis_client = redis::Client::open(redis_url)?;
+    let redis = ConnectionManager::new(redis_client).await?;
 
-    let app = App::new(node_id, http_addr, raft.clone(), state_machine_store, router, redis);
+    let app = App::new(
+        node_id,
+        http_addr,
+        raft.clone(),
+        state_machine_store,
+        router,
+        redis,
+    );
 
-    (raft, app)
+    Ok((raft, app))
 }

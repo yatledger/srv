@@ -15,8 +15,10 @@ services:
       NODE_ID: "1"
       ADVERTISE_ADDR: "node1:21001"
       BIND_ADDR: "0.0.0.0:21001"
+      HTTP_PORT: "21001"
       DATA_DIR: "/data"
       REDIS_URL: "redis://:CHANGE_ME@redis:6379/0"
+      INTERNAL_API_TOKEN: "CHANGE_ME_LONG_RANDOM_TOKEN"
       RUST_LOG: "info"
     command: ["--id", "1", "--addr", "node1", "--port", "21001"]
     volumes:
@@ -32,8 +34,10 @@ services:
       NODE_ID: "2"
       ADVERTISE_ADDR: "node2:21002"
       BIND_ADDR: "0.0.0.0:21002"
+      HTTP_PORT: "21002"
       DATA_DIR: "/data"
       REDIS_URL: "redis://:CHANGE_ME@redis:6379/0"
+      INTERNAL_API_TOKEN: "CHANGE_ME_LONG_RANDOM_TOKEN"
       RUST_LOG: "info"
     command: ["--id", "2", "--addr", "node2", "--port", "21002"]
     volumes:
@@ -49,8 +53,10 @@ services:
       NODE_ID: "3"
       ADVERTISE_ADDR: "node3:21003"
       BIND_ADDR: "0.0.0.0:21003"
+      HTTP_PORT: "21003"
       DATA_DIR: "/data"
       REDIS_URL: "redis://:CHANGE_ME@redis:6379/0"
+      INTERNAL_API_TOKEN: "CHANGE_ME_LONG_RANDOM_TOKEN"
       RUST_LOG: "info"
     command: ["--id", "3", "--addr", "node3", "--port", "21003"]
     volumes:

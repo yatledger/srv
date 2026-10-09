@@ -1,7 +1,7 @@
 // Модуль для определения команд и ответов Raft
+use crate::Tx;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
-use crate::Tx;
 
 // Команды, которые будут отправляться через Raft для управления DAG
 #[derive(Debug, Clone, Serialize, Deserialize)]

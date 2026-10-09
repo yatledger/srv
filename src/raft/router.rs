@@ -1,10 +1,10 @@
-use std::time::Duration;
-use reqwest::Client;
 use openraft::error::Unreachable;
+use reqwest::Client;
 use serde::Serialize;
 use serde::de::DeserializeOwned;
-use tracing::{debug, error};
 use serde_json::Value;
+use std::time::Duration;
+use tracing::{debug, error};
 
 use super::typ::*;
 use crate::NodeId;
@@ -16,10 +16,10 @@ pub struct Router {
 }
 
 impl Router {
-    pub fn new() -> Self {
+    pub fn new(timeout: Duration, connect_timeout: Duration) -> Self {
         let client = Client::builder()
-            .timeout(Duration::from_secs(30))
-            .connect_timeout(Duration::from_secs(10))
+            .timeout(timeout)
+            .connect_timeout(connect_timeout)
             .pool_idle_timeout(Duration::from_secs(45))
             .pool_max_idle_per_host(10)
             .build()
@@ -27,7 +27,7 @@ impl Router {
 
         Router { client }
     }
-    
+
     /// Унифицированный метод отправки запросов
     pub async fn send<Req, Resp>(
         &self,
@@ -41,8 +41,12 @@ impl Router {
         Resp: DeserializeOwned,
         Result<Resp, RaftError>: DeserializeOwned,
     {
-        let url = format!("http://{}/{}", addr.trim_end_matches('/'), path.trim_start_matches('/'));
-        
+        let url = format!(
+            "http://{}/{}",
+            addr.trim_end_matches('/'),
+            path.trim_start_matches('/')
+        );
+
         // Логируем запрос
         if let Ok(req_json) = serde_json::to_string(&req) {
             debug!(">>> network send request to [{}] {}: {}", to, url, req_json);
@@ -50,10 +54,10 @@ impl Router {
 
         // Отправляем HTTP запрос
         let response = self.send_http_request(&url, &req).await?;
-        
+
         // Читаем ответ
         let response_text = self.read_response_text(response, &url).await?;
-        
+
         // Парсим ответ
         self.parse_response(&response_text, &url).await
     }
@@ -64,15 +68,10 @@ impl Router {
         url: &str,
         req: &Req,
     ) -> Result<reqwest::Response, Unreachable> {
-        self.client
-            .post(url)
-            .json(req)
-            .send()
-            .await
-            .map_err(|e| {
-                error!("Failed to send request to {}: {}", url, e);
-                Unreachable::new(&e)
-            })
+        self.client.post(url).json(req).send().await.map_err(|e| {
+            error!("Failed to send request to {}: {}", url, e);
+            Unreachable::new(&e)
+        })
     }
 
     /// Чтение тела ответа
@@ -88,18 +87,15 @@ impl Router {
             error!("HTTP error {} from {}: {}", status, url, error_body);
             return Err(Unreachable::new(&std::io::Error::new(
                 std::io::ErrorKind::Other,
-                format!("HTTP error {}: {}", status, error_body)
+                format!("HTTP error {}: {}", status, error_body),
             )));
         }
 
         // Читаем тело ответа
-        let response_text = response
-            .text()
-            .await
-            .map_err(|e| {
-                error!("Failed to read response from {}: {}", url, e);
-                Unreachable::new(&e)
-            })?;
+        let response_text = response.text().await.map_err(|e| {
+            error!("Failed to read response from {}: {}", url, e);
+            Unreachable::new(&e)
+        })?;
 
         debug!("<<< network recv reply from {}: {}", url, response_text);
 
@@ -108,7 +104,7 @@ impl Router {
             error!("Empty response from {}", url);
             return Err(Unreachable::new(&std::io::Error::new(
                 std::io::ErrorKind::InvalidData,
-                "Empty response from remote node"
+                "Empty response from remote node",
             )));
         }
 
@@ -125,11 +121,10 @@ impl Router {
         Result<Resp, RaftError>: DeserializeOwned,
     {
         // Сначала проверяем, что это валидный JSON
-        let _: Value = serde_json::from_str(response_text)
-            .map_err(|e| {
-                error!("Invalid JSON from {}: {}. Data: {}", url, e, response_text);
-                Unreachable::new(&e)
-            })?;
+        let _: Value = serde_json::from_str(response_text).map_err(|e| {
+            error!("Invalid JSON from {}: {}. Data: {}", url, e, response_text);
+            Unreachable::new(&e)
+        })?;
 
         // Стратегия 1: Пробуем парсить как прямой объект Resp
         if let Ok(direct_result) = serde_json::from_str::<Resp>(response_text) {
@@ -147,7 +142,7 @@ impl Router {
                 error!("Raft error from {}: {:?}", url, raft_error);
                 Err(Unreachable::new(&std::io::Error::new(
                     std::io::ErrorKind::Other,
-                    format!("Raft error: {:?}", raft_error)
+                    format!("Raft error: {:?}", raft_error),
                 )))
             }
             Err(parse_error) => {
@@ -157,12 +152,15 @@ impl Router {
                         error!("Error response from {}: {}", url, error_info);
                         return Err(Unreachable::new(&std::io::Error::new(
                             std::io::ErrorKind::Other,
-                            error_info
+                            error_info,
                         )));
                     }
                 }
 
-                error!("Failed to parse response from {}: {}. Data: {}", url, parse_error, response_text);
+                error!(
+                    "Failed to parse response from {}: {}. Data: {}",
+                    url, parse_error, response_text
+                );
                 Err(Unreachable::new(&parse_error))
             }
         }
@@ -189,6 +187,6 @@ impl Router {
 
 impl Default for Router {
     fn default() -> Self {
-        Self::new()
+        Self::new(Duration::from_secs(30), Duration::from_secs(10))
     }
 }

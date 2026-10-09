@@ -27,7 +27,7 @@ pub async fn start_processor(sm: Arc<StateMachineStore>, raft: Raft, node_id: No
     let mut last_cleanup_time = Instant::now(); // Время последней очистки
 
     // Настраиваем подключение к Redis
-    let redis_url = "redis://:REDACTED_ROTATED_SECRET@localhost/0";
+    let redis_url = std::env::var("REDIS_URL").expect("REDIS_URL must be set");
     let redis_client = redis::Client::open(redis_url).expect("Failed to create Redis client");
     let mut con: MultiplexedConnection = redis_client
         .get_multiplexed_tokio_connection()

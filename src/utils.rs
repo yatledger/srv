@@ -1,25 +1,25 @@
-use std::sync::Arc;
 use std::collections::HashSet;
+use std::sync::Arc;
 //use ed25519_dalek::VerifyingKey;
 //use base58::FromBase58;
-use serde_json::{to_value, Value};
-use itertools::Itertools;
-use blake3::Hash;
 use crate::Tx;
+use blake3::Hash;
+use itertools::Itertools;
+use serde_json::{Value, to_value};
 
 // Преобразует Tx в строку: сериализует в JSON, сортирует ключи, объединяет значения
 pub fn ordered_sum(tx: &Tx) -> Result<Hash, String> {
     // Сериализуем Tx в JSON-объект
     let value = to_value(tx).map_err(|e| format!("Serialization error: {}", e))?;
     let map = value.as_object().ok_or("Tx must serialize to an object")?;
-    
+
     // Собираем значения в отсортированном порядке ключей
     let mut result = String::new();
     for key in map.keys().sorted() {
         let value = map.get(key).unwrap();
         result.push_str(&process_value(value)?);
     }
-    
+
     Ok(blake3::hash(result.as_bytes()))
 }
 
@@ -27,11 +27,7 @@ fn process_value(value: &Value) -> Result<String, String> {
     match value {
         Value::String(s) => Ok(s.clone()),
         Value::Number(n) => Ok(n.to_string()),
-        Value::Array(arr) => {
-            Ok(arr.iter()
-                .filter_map(|v| v.as_str())
-                .collect::<String>())
-        },
+        Value::Array(arr) => Ok(arr.iter().filter_map(|v| v.as_str()).collect::<String>()),
         Value::Object(obj) => {
             // Рекурсивно обрабатываем объект (например, "var")
             let mut obj_result = String::new();
@@ -40,7 +36,7 @@ fn process_value(value: &Value) -> Result<String, String> {
                 obj_result.push_str(&process_value(obj_value)?);
             }
             Ok(obj_result)
-        },
+        }
         Value::Null => Ok(String::new()),
         Value::Bool(b) => Ok(b.to_string()),
     }

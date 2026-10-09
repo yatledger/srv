@@ -3,9 +3,9 @@ use std::sync::Arc;
 use std::sync::Mutex;
 use tokio::sync::RwLock;
 
-use openraft::storage::RaftStateMachine;
 use openraft::EntryPayload;
 use openraft::RaftSnapshotBuilder;
+use openraft::storage::RaftStateMachine;
 use serde::Deserialize;
 use serde::Serialize;
 
@@ -14,7 +14,7 @@ use super::command::{Request, Response};
 use super::typ::*;
 use crate::TypeConfig;
 
-use crate::graph::dag::{DAG};
+use crate::graph::dag::DAG;
 
 #[derive(Debug)]
 pub struct StoredSnapshot {
@@ -63,7 +63,7 @@ impl RaftSnapshotBuilder<TypeConfig> for Arc<StateMachineStore> {
             // Serialize the data of the state machine.
             let state_machine_guard = self.state_machine.read().await;
             // Теперь `data_clone` имеет тип `StateMachineData`, а не `RwLockReadGuard`.
-            let data_clone = state_machine_guard.clone(); 
+            let data_clone = state_machine_guard.clone();
 
             last_applied_log = data_clone.last_applied;
             last_membership = data_clone.last_membership.clone();
@@ -77,7 +77,12 @@ impl RaftSnapshotBuilder<TypeConfig> for Arc<StateMachineStore> {
         };
 
         let snapshot_id = if let Some(last) = last_applied_log {
-            format!("{}-{}-{}", last.committed_leader_id(), last.index(), snapshot_idx)
+            format!(
+                "{}-{}-{}",
+                last.committed_leader_id(),
+                last.index(),
+                snapshot_idx
+            )
         } else {
             format!("--{}", snapshot_idx)
         };
@@ -98,7 +103,10 @@ impl RaftSnapshotBuilder<TypeConfig> for Arc<StateMachineStore> {
             *current_snapshot = Some(snapshot);
         }
 
-        Ok(Snapshot { meta, snapshot: data })
+        Ok(Snapshot {
+            meta,
+            snapshot: data,
+        })
     }
 }
 
@@ -107,12 +115,17 @@ impl RaftStateMachine<TypeConfig> for Arc<StateMachineStore> {
 
     async fn applied_state(&mut self) -> Result<(Option<LogId>, StoredMembership), StorageError> {
         let state_machine = self.state_machine.read().await;
-        Ok((state_machine.last_applied, state_machine.last_membership.clone()))
+        Ok((
+            state_machine.last_applied,
+            state_machine.last_membership.clone(),
+        ))
     }
 
     #[tracing::instrument(level = "trace", skip(self, entries))]
     async fn apply<I>(&mut self, entries: I) -> Result<Vec<Response>, StorageError>
-    where I: IntoIterator<Item = Entry> {
+    where
+        I: IntoIterator<Item = Entry>,
+    {
         let mut res = Vec::new();
 
         let mut sm = self.state_machine.write().await;
@@ -125,21 +138,37 @@ impl RaftStateMachine<TypeConfig> for Arc<StateMachineStore> {
             match entry.payload {
                 EntryPayload::Blank => res.push(Response { value: None }),
                 EntryPayload::Normal(ref req) => match req {
-                    Request::Add { hash, tx, sign, func } => {
+                    Request::Add {
+                        hash,
+                        tx,
+                        sign,
+                        func,
+                    } => {
                         // --- ВАША ЛОГИКА ВАЛИДАЦИИ ---
                         // Например, проверяем, что все родители существуют
                         // let parents_exist = tx.prnts.iter().all(|p| sm.dag.get_nodes().contains_key(p));
                         let parents_exist = true;
-                        
+
                         if !parents_exist {
                             // Проверка не пройдена. НЕ меняем DAG.
                             // Отправляем клиенту сообщение об ошибке.
-                            tracing::warn!("Validation failed for Add request: parents do not exist.");
-                            res.push(Response { value: Some("Error: One or more parents not found.".to_string()) });
+                            tracing::warn!(
+                                "Validation failed for Add request: parents do not exist."
+                            );
+                            res.push(Response {
+                                value: Some("Error: One or more parents not found.".to_string()),
+                            });
                         } else {
                             // Проверка пройдена. Меняем DAG.
-                            let _ = sm.dag.add_node_with_parents(hash.clone(), tx.clone(), sign.clone(), func.clone());
-                            res.push(Response { value: Some("Ok".to_string()) });
+                            let _ = sm.dag.add_node_with_parents(
+                                hash.clone(),
+                                tx.clone(),
+                                sign.clone(),
+                                func.clone(),
+                            );
+                            res.push(Response {
+                                value: Some("Ok".to_string()),
+                            });
                         }
                     }
                     Request::Remove { nodes } => {
@@ -150,12 +179,20 @@ impl RaftStateMachine<TypeConfig> for Arc<StateMachineStore> {
 
                         if !nodes_exist {
                             // Проверка не пройдена. НЕ меняем DAG.
-                            tracing::warn!("Validation failed for Remove request: nodes do not exist.");
-                            res.push(Response { value: Some("Error: One or more nodes for removal not found.".to_string()) });
+                            tracing::warn!(
+                                "Validation failed for Remove request: nodes do not exist."
+                            );
+                            res.push(Response {
+                                value: Some(
+                                    "Error: One or more nodes for removal not found.".to_string(),
+                                ),
+                            });
                         } else {
                             // Проверка пройдена. Меняем DAG.
                             let _ = sm.dag.remove_nodes(nodes.clone());
-                            res.push(Response { value: Some("Ok".to_string()) });
+                            res.push(Response {
+                                value: Some("Ok".to_string()),
+                            });
                         }
                     }
                 },
@@ -174,7 +211,11 @@ impl RaftStateMachine<TypeConfig> for Arc<StateMachineStore> {
     }
 
     #[tracing::instrument(level = "trace", skip(self, snapshot))]
-    async fn install_snapshot(&mut self, meta: &SnapshotMeta, snapshot: SnapshotData) -> Result<(), StorageError> {
+    async fn install_snapshot(
+        &mut self,
+        meta: &SnapshotMeta,
+        snapshot: SnapshotData,
+    ) -> Result<(), StorageError> {
         tracing::info!("install snapshot");
 
         let new_snapshot = StoredSnapshot {

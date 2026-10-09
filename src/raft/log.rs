@@ -6,13 +6,13 @@ use std::fmt::Debug;
 use std::ops::RangeBounds;
 use std::sync::Arc;
 
+use openraft::LogState;
+use openraft::RaftTypeConfig;
+use openraft::StorageError;
 use openraft::alias::LogIdOf;
 use openraft::alias::VoteOf;
 use openraft::entry::RaftEntry;
 use openraft::storage::IOFlushed;
-use openraft::LogState;
-use openraft::RaftTypeConfig;
-use openraft::StorageError;
 use tokio::sync::Mutex;
 
 /// RaftLogStore implementation with a in-memory storage
@@ -55,7 +55,11 @@ impl<C: RaftTypeConfig> LogStoreInner<C> {
     where
         C::Entry: Clone,
     {
-        let response = self.log.range(range.clone()).map(|(_, val)| val.clone()).collect::<Vec<_>>();
+        let response = self
+            .log
+            .range(range.clone())
+            .map(|(_, val)| val.clone())
+            .collect::<Vec<_>>();
         Ok(response)
     }
 
@@ -75,7 +79,10 @@ impl<C: RaftTypeConfig> LogStoreInner<C> {
         })
     }
 
-    async fn save_committed(&mut self, committed: Option<LogIdOf<C>>) -> Result<(), StorageError<C>> {
+    async fn save_committed(
+        &mut self,
+        committed: Option<LogIdOf<C>>,
+    ) -> Result<(), StorageError<C>> {
         self.committed = committed;
         Ok(())
     }
@@ -94,7 +101,9 @@ impl<C: RaftTypeConfig> LogStoreInner<C> {
     }
 
     async fn append<I>(&mut self, entries: I, callback: IOFlushed<C>) -> Result<(), StorageError<C>>
-    where I: IntoIterator<Item = C::Entry> {
+    where
+        I: IntoIterator<Item = C::Entry>,
+    {
         // Simple implementation that calls the flush-before-return `append_to_log`.
         for entry in entries {
             self.log.insert(entry.index(), entry);
@@ -105,7 +114,11 @@ impl<C: RaftTypeConfig> LogStoreInner<C> {
     }
 
     async fn truncate(&mut self, log_id: LogIdOf<C>) -> Result<(), StorageError<C>> {
-        let keys = self.log.range(log_id.index()..).map(|(k, _v)| *k).collect::<Vec<_>>();
+        let keys = self
+            .log
+            .range(log_id.index()..)
+            .map(|(k, _v)| *k)
+            .collect::<Vec<_>>();
         for key in keys {
             self.log.remove(&key);
         }
@@ -121,7 +134,11 @@ impl<C: RaftTypeConfig> LogStoreInner<C> {
         }
 
         {
-            let keys = self.log.range(..=log_id.index()).map(|(k, _v)| *k).collect::<Vec<_>>();
+            let keys = self
+                .log
+                .range(..=log_id.index())
+                .map(|(k, _v)| *k)
+                .collect::<Vec<_>>();
             for key in keys {
                 self.log.remove(&key);
             }
@@ -135,19 +152,20 @@ mod impl_log_store {
     use std::fmt::Debug;
     use std::ops::RangeBounds;
 
-    use openraft::alias::LogIdOf;
-    use openraft::alias::VoteOf;
-    use openraft::storage::IOFlushed;
-    use openraft::storage::RaftLogStorage;
     use openraft::LogState;
     use openraft::RaftLogReader;
     use openraft::RaftTypeConfig;
     use openraft::StorageError;
+    use openraft::alias::LogIdOf;
+    use openraft::alias::VoteOf;
+    use openraft::storage::IOFlushed;
+    use openraft::storage::RaftLogStorage;
 
     use crate::LogStore;
 
     impl<C: RaftTypeConfig> RaftLogReader<C> for LogStore<C>
-    where C::Entry: Clone
+    where
+        C::Entry: Clone,
     {
         async fn try_get_log_entries<RB: RangeBounds<u64> + Clone + Debug>(
             &mut self,
@@ -164,7 +182,8 @@ mod impl_log_store {
     }
 
     impl<C: RaftTypeConfig> RaftLogStorage<C> for LogStore<C>
-    where C::Entry: Clone
+    where
+        C::Entry: Clone,
     {
         type LogReader = Self;
 
@@ -173,7 +192,10 @@ mod impl_log_store {
             inner.get_log_state().await
         }
 
-        async fn save_committed(&mut self, committed: Option<LogIdOf<C>>) -> Result<(), StorageError<C>> {
+        async fn save_committed(
+            &mut self,
+            committed: Option<LogIdOf<C>>,
+        ) -> Result<(), StorageError<C>> {
             let mut inner = self.inner.lock().await;
             inner.save_committed(committed).await
         }
@@ -188,8 +210,14 @@ mod impl_log_store {
             inner.save_vote(vote).await
         }
 
-        async fn append<I>(&mut self, entries: I, callback: IOFlushed<C>) -> Result<(), StorageError<C>>
-        where I: IntoIterator<Item = C::Entry> {
+        async fn append<I>(
+            &mut self,
+            entries: I,
+            callback: IOFlushed<C>,
+        ) -> Result<(), StorageError<C>>
+        where
+            I: IntoIterator<Item = C::Entry>,
+        {
             let mut inner = self.inner.lock().await;
             inner.append(entries, callback).await
         }

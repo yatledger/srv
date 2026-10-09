@@ -35,7 +35,7 @@ const NODE_COUNT_THRESHOLD: usize = 25; // Порог количества уз�
 pub async fn start_cleaner(graph: Arc<RwLock<DAG>>) {
     let mut last_cleanup_time = Instant::now(); // Время последней очистки
     // Set up Redis connection
-    let redis_url = "redis://:REDACTED_ROTATED_SECRET@localhost/0";
+    let redis_url = std::env::var("REDIS_URL").expect("REDIS_URL must be set");
     let redis_client = redis::Client::open(redis_url).expect("Failed to create Redis client");
     let mut con: MultiplexedConnection = redis_client
         .get_multiplexed_tokio_connection()

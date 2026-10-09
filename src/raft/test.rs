@@ -1,9 +1,9 @@
 use std::sync::Arc;
 
+use super::log;
+use openraft::StorageError;
 use openraft::testing::log::StoreBuilder;
 use openraft::testing::log::Suite;
-use openraft::StorageError;
-use super::log;
 
 pub type LogStore = log::LogStore<TypeConfig>;
 use super::store::StateMachineStore;
@@ -12,7 +12,9 @@ use crate::TypeConfig;
 struct MemDAGStoreBuilder {}
 
 impl StoreBuilder<TypeConfig, LogStore, Arc<StateMachineStore>, ()> for MemDAGStoreBuilder {
-    async fn build(&self) -> Result<((), LogStore, Arc<StateMachineStore>), StorageError<TypeConfig>> {
+    async fn build(
+        &self,
+    ) -> Result<((), LogStore, Arc<StateMachineStore>), StorageError<TypeConfig>> {
         Ok(((), LogStore::default(), Arc::default()))
     }
 }

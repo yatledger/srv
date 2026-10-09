@@ -2,12 +2,9 @@ use std::sync::Arc;
 
 use redis::aio::ConnectionManager;
 
-use crate::web::Router;
-use crate::raft::{
-    store::StateMachineStore,
-    typ::Raft,
-};
 use crate::NodeId;
+use crate::raft::{store::StateMachineStore, typ::Raft};
+use crate::web::Router;
 
 /// Representation of an application state.
 #[derive(Clone)]
@@ -21,7 +18,14 @@ pub struct App {
 }
 
 impl App {
-    pub fn new(id: NodeId, addr: String, raft: Raft, state_machine: Arc<StateMachineStore>, router: Router, redis: ConnectionManager) -> Self {
+    pub fn new(
+        id: NodeId,
+        addr: String,
+        raft: Raft,
+        state_machine: Arc<StateMachineStore>,
+        router: Router,
+        redis: ConnectionManager,
+    ) -> Self {
         Self {
             id,
             addr,
