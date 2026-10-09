@@ -380,11 +380,18 @@ async fn cluster_init_membership_replication_snapshot_restart_concurrent() {
     wait_node_count(&client, &node3.base(), 4).await;
 
     // 7. Конкурентные записи (все — в лидер напрямую).
+    //
+    // V18: `seq` монотонен **в рамках адреса**, а порядок применения в логе
+    // Raft не обязан совпадать с порядком отправки. Поэтому разные `seq` одного
+    // адреса нельзя слать параллельно (иначе `non-monotonic seq`); конкурентность
+    // `client_write` проверяем, отправляя транзакции от **разных** аккаунтов —
+    // у каждого свой независимый `seq`/`last_seq`.
     let mut tasks = Vec::new();
-    for seq in 0..10u32 {
+    for i in 0..10u8 {
         let client = client.clone();
         let base = node1.base();
-        let body = signed_tx(&sk, &addr, &[p1.clone(), p2.clone()], 100 + seq);
+        let (addr_i, sk_i) = keypair(20 + i);
+        let body = signed_tx(&sk_i, &addr_i, &[p1.clone(), p2.clone()], 0);
         tasks.push(tokio::spawn(
             async move { post_tx(&client, &base, &body).await },
         ));
