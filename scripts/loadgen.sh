@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# Обёртка нагрузочного генератора dagdb (N01).
+# Обёртка нагрузочного генератора dagdb.
 #
 # Собирает release-бинарь `loadgen`, проверяет доступность Redis и запускает
 # нагрузочный сценарий на in-process кластере. Переданные аргументы заменяют
@@ -8,7 +8,6 @@
 #
 # Переменные окружения:
 #   REDIS_URL     строка подключения к Redis (по умолчанию redis://127.0.0.1:6379/0)
-#   LOADGEN_ARGS  набор аргументов по умолчанию (пробелы допустимы)
 #
 # Примеры:
 #   ./scripts/loadgen.sh
@@ -19,9 +18,6 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 
 REDIS_URL="${REDIS_URL:-redis://127.0.0.1:6379/0}"
-if [[ -z "${LOADGEN_ARGS:-}" ]]; then
-    LOADGEN_ARGS="--nodes 3 --tx 500 --tps 500 --concurrency 8 --accounts 16 --parents 2"
-fi
 
 echo "== 1. Проверяю Redis ($REDIS_URL) =="
 if command -v redis-cli >/dev/null 2>&1; then
@@ -41,6 +37,5 @@ echo "== 3. Запускаю нагрузочный прогон =="
 if [[ $# -gt 0 ]]; then
     exec ./target/release/loadgen "$@"
 else
-    # shellcheck disable=SC2086 # LOADGEN_ARGS намеренно разбивается на слова.
-    exec ./target/release/loadgen $LOADGEN_ARGS
+    exec ./target/release/loadgen
 fi
