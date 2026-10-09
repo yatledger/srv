@@ -168,12 +168,22 @@ fn parse_sleep_secs(raw: &str) -> Result<f64, String> {
     Ok(secs)
 }
 
+/// Фильтр логирования по умолчанию.
+///
+/// По умолчанию — `error`: в нагрузочном/демо-прогоне кластер сам себя инициализирует,
+/// и `openraft` сыпет диагностическими `WARN` при смене membership во время bootstrap
+/// (`membership_log_id changed: …`). Это не дефект, а внутренний шум, который портит
+/// наглядный вывод. `--verbose` возвращает `debug`, а `RUST_LOG` (если задан) имеет
+/// приоритет над этим значением.
+fn default_log_filter(verbose: bool) -> &'static str {
+    if verbose { "debug" } else { "error" }
+}
+
 #[tokio::main]
 async fn main() -> ExitCode {
     let cfg = LoadgenConfig::parse();
-    let level = if cfg.verbose { "debug" } else { "warn" };
     let filter = tracing_subscriber::EnvFilter::try_from_default_env()
-        .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new(level));
+        .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new(default_log_filter(cfg.verbose)));
     tracing_subscriber::fmt()
         .with_env_filter(filter)
         .with_target(false)
@@ -296,5 +306,11 @@ mod tests {
         assert!(parse_sleep_secs("NaN").is_err());
         assert!(parse_sleep_secs("inf").is_err());
         assert!(parse_sleep_secs("abc").is_err());
+    }
+
+    #[test]
+    fn default_log_filter_quiet_unless_verbose() {
+        assert_eq!(default_log_filter(false), "error");
+        assert_eq!(default_log_filter(true), "debug");
     }
 }
