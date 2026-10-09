@@ -29,7 +29,7 @@ pub struct NodeTime {
 }
 
 #[derive(Debug, Clone)]
-pub struct DAG {
+pub struct Dag {
     nodes: HashMap<Arc<str>, Node>,
     added: HashMap<Arc<str>, u64>,
 }
@@ -65,9 +65,9 @@ pub fn extract_from_var_struct(tx: &Tx) -> Result<TxVar, String> {
     serde_json::from_value(tx.var.clone()).map_err(|e| format!("Failed to deserialize var: {}", e))
 }
 
-impl DAG {
+impl Dag {
     pub fn new() -> Self {
-        DAG {
+        Dag {
             nodes: HashMap::new(),
             added: HashMap::new(),
         }
@@ -345,8 +345,8 @@ impl<'de> Deserialize<'de> for Node {
     }
 }
 
-// Реализация Serialize для DAG
-impl Serialize for DAG {
+// Реализация Serialize для Dag
+impl Serialize for Dag {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
     where
         S: Serializer,
@@ -362,8 +362,8 @@ impl Serialize for DAG {
     }
 }
 
-// Реализация Deserialize для DAG
-impl<'de> Deserialize<'de> for DAG {
+// Реализация Deserialize для Dag
+impl<'de> Deserialize<'de> for Dag {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where
         D: Deserializer<'de>,
@@ -371,13 +371,13 @@ impl<'de> Deserialize<'de> for DAG {
         struct DAGVisitor;
 
         impl<'de> Visitor<'de> for DAGVisitor {
-            type Value = DAG;
+            type Value = Dag;
 
             fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
-                formatter.write_str("struct DAG")
+                formatter.write_str("struct Dag")
             }
 
-            fn visit_map<V>(self, mut map: V) -> Result<DAG, V::Error>
+            fn visit_map<V>(self, mut map: V) -> Result<Dag, V::Error>
             where
                 V: MapAccess<'de>,
             {
@@ -421,16 +421,16 @@ impl<'de> Deserialize<'de> for DAG {
                 let nodes = nodes.unwrap_or_default();
                 let added = added.unwrap_or_default();
 
-                // Возвращаем заполненную структуру DAG
-                Ok(DAG { nodes, added })
+                // Возвращаем заполненную структуру Dag
+                Ok(Dag { nodes, added })
             }
         }
 
-        deserializer.deserialize_struct("DAG", &["nodes"], DAGVisitor)
+        deserializer.deserialize_struct("Dag", &["nodes"], DAGVisitor)
     }
 }
 
-impl Default for DAG {
+impl Default for Dag {
     fn default() -> Self {
         Self::new()
     }
@@ -476,7 +476,7 @@ mod tests {
 
     #[test]
     fn add_node_with_parents_does_not_panic_on_bad_var() {
-        let mut dag = DAG::new();
+        let mut dag = Dag::new();
         let tx = Tx {
             prnts: vec![],
             addr: Arc::from("addr"),
@@ -492,5 +492,109 @@ mod tests {
         );
         assert!(result.is_err(), "вредоносный var не должен паниковать");
         assert_eq!(dag.get_node_count(), 0);
+    }
+
+    fn valid_tx(parents: Vec<Arc<str>>) -> Tx {
+        Tx {
+            prnts: parents,
+            addr: Arc::from("addr"),
+            seq: 0,
+            var: json!({ "ca": "a", "to": "b", "val": 1, "msg": "m" }),
+        }
+    }
+
+    #[test]
+    fn add_creates_bidirectional_parent_child_links() {
+        let mut dag = Dag::new();
+        let parent: Arc<str> = Arc::from("parent");
+        dag.add_node_with_parents(
+            parent.clone(),
+            valid_tx(vec![]),
+            String::new(),
+            "transferToken".to_string(),
+        )
+        .unwrap();
+
+        let child: Arc<str> = Arc::from("child");
+        dag.add_node_with_parents(
+            child.clone(),
+            valid_tx(vec![parent.clone()]),
+            String::new(),
+            "transferToken".to_string(),
+        )
+        .unwrap();
+
+        // У ребёнка записан родитель, у родителя — ребёнок.
+        assert!(dag.get_node_mut(&child).unwrap().parents.contains(&parent));
+        assert!(dag.get_node_mut(&parent).unwrap().children.contains(&child));
+        assert_eq!(dag.get_node_count(), 2);
+        assert!(dag.contains_node(&child));
+    }
+
+    #[test]
+    fn add_ignores_parent_missing_from_dag() {
+        let mut dag = Dag::new();
+        let node: Arc<str> = Arc::from("n");
+        // Родитель отсутствует в Dag: связь не создаётся, но узел добавляется.
+        dag.add_node_with_parents(
+            node.clone(),
+            valid_tx(vec![Arc::from("ghost")]),
+            String::new(),
+            "transferToken".to_string(),
+        )
+        .unwrap();
+        assert!(dag.get_node_mut(&node).unwrap().parents.is_empty());
+    }
+
+    #[test]
+    fn remove_node_moves_it_to_added_and_clears_links() {
+        let mut dag = Dag::new();
+        let parent: Arc<str> = Arc::from("parent");
+        dag.add_node_with_parents(
+            parent.clone(),
+            valid_tx(vec![]),
+            String::new(),
+            "transferToken".to_string(),
+        )
+        .unwrap();
+        let child: Arc<str> = Arc::from("child");
+        dag.add_node_with_parents(
+            child.clone(),
+            valid_tx(vec![parent.clone()]),
+            String::new(),
+            "transferToken".to_string(),
+        )
+        .unwrap();
+
+        dag.remove_node(child.clone());
+
+        assert!(!dag.contains_node(&child));
+        assert!(
+            dag.is_node_added(&child),
+            "удалённый узел попадает в реестр added"
+        );
+        // Связь у родителя очищена.
+        assert!(!dag.get_node_mut(&parent).unwrap().children.contains(&child));
+        assert_eq!(dag.get_node_count(), 1);
+    }
+
+    #[test]
+    fn remove_nodes_skips_absent_and_removes_present() {
+        let mut dag = Dag::new();
+        let a: Arc<str> = Arc::from("a");
+        dag.add_node_with_parents(
+            a.clone(),
+            valid_tx(vec![]),
+            String::new(),
+            "transferToken".to_string(),
+        )
+        .unwrap();
+
+        dag.remove_nodes(vec![a.clone(), Arc::from("absent")])
+            .unwrap();
+
+        assert!(!dag.contains_node(&a));
+        assert!(dag.is_node_added(&a));
+        assert!(!dag.is_node_added(&Arc::from("absent")));
     }
 }

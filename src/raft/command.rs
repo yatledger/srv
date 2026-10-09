@@ -3,7 +3,7 @@ use crate::Tx;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
-// Команды, которые будут отправляться через Raft для управления DAG
+// Команды, которые будут отправляться через Raft для управления Dag
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum Request {
     // Добавление узла с хэшом, родителями и данными

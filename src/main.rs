@@ -17,7 +17,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .init();
 
     // Логируем запуск приложения
-    info!("Starting the DAG server");
+    info!("Starting the Dag server");
 
     let cfg = AppConfig::load();
     let internal_api_token = cfg.internal_api_token()?;

@@ -25,10 +25,6 @@ use crate::graph::dag::extract_from_var_struct;
 use crate::graph::weights::NodeDepth;
 use crate::web::ApiResponse;
 
-use base58::FromBase58;
-use ed25519_dalek::{Signature, Verifier, VerifyingKey};
-use hex::FromHex;
-
 #[derive(Deserialize, Serialize, Debug)]
 pub struct StandardResponse {
     pub status: String,
@@ -91,81 +87,13 @@ async fn validate_and_prepare_tx(
         }
     };
 
-    // Проверка самой подписи
-    let signature_bytes = match <[u8; 64]>::from_hex(payload.sign.as_str()) {
-        Ok(bytes) => bytes,
-        Err(_) => {
-            return Err((
-                StatusCode::BAD_REQUEST,
-                Json(ApiResponse::Error {
-                    status: "error".to_string(),
-                    message: "Invalid hex for signature".to_string(),
-                }),
-            ));
-        }
-    };
-
-    let signature = match Signature::try_from(signature_bytes.as_ref()) {
-        Ok(sig) => sig,
-        Err(_) => {
-            return Err((
-                StatusCode::BAD_REQUEST,
-                Json(ApiResponse::Error {
-                    status: "error".to_string(),
-                    message: "Invalid signature format".to_string(),
-                }),
-            ));
-        }
-    };
-
-    let addr_bytes = match payload.tx.addr.from_base58() {
-        Ok(bytes) => bytes,
-        Err(_) => {
-            return Err((
-                StatusCode::BAD_REQUEST,
-                Json(ApiResponse::Error {
-                    status: "error".to_string(),
-                    message: "Invalid base58 in signature verification".to_string(),
-                }),
-            ));
-        }
-    };
-
-    let addr_array: [u8; 32] = match addr_bytes.try_into() {
-        Ok(arr) => arr,
-        Err(_) => {
-            return Err((
-                StatusCode::BAD_REQUEST,
-                Json(ApiResponse::Error {
-                    status: "error".to_string(),
-                    message: "Invalid Ed25519 key length".to_string(),
-                }),
-            ));
-        }
-    };
-
-    let verify_key = match VerifyingKey::from_bytes(&addr_array) {
-        Ok(key) => key,
-        Err(_) => {
-            return Err((
-                StatusCode::BAD_REQUEST,
-                Json(ApiResponse::Error {
-                    status: "error".to_string(),
-                    message: "Invalid Ed25519 public key".to_string(),
-                }),
-            ));
-        }
-    };
-
-    if verify_key
-        .verify(tx_hash_bytes.as_bytes(), &signature)
-        .is_err()
-    {
+    // Проверяем подпись ed25519 над каноническим хэшем контента.
+    if let Err(err) = verify_signature(&payload.tx.addr, &payload.sign, tx_hash_bytes.as_bytes()) {
         return Err((
             StatusCode::BAD_REQUEST,
             Json(ApiResponse::Error {
                 status: "error".to_string(),
-                message: "Signature verification failed".to_string(),
+                message: err,
             }),
         ));
     }
@@ -451,7 +379,7 @@ async fn remove_heavy_nodes_handler(
         // Блокируем state_machine для получения данных узлов
         let state_machine = app.state_machine.state_machine.read().await;
         for node in &nodes_to_remove {
-            // Получаем данные узла из DAG
+            // Получаем данные узла из Dag
             if let Some(node_data) = state_machine.dag.get_node_data(node) {
                 // Сериализуем данные узла в JSON
                 let node_data_json = match serde_json::to_string(&node_data) {

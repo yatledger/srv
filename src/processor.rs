@@ -16,7 +16,7 @@ const UPDATE_INTERVAL: Duration = Duration::from_millis(250); // Интерва�
 const WEIGHT_THRESHOLD: f64 = 5.0; // Порог веса для удаления узлов
 const BATCH_SIZE: usize = 100; // Количество узлов для проверки за один раз
 
-// Запускает фоновую задачу для пересчета весов узлов DAG и очистки узлов с весами выше порога
+// Запускает фоновую задачу для пересчета весов узлов Dag и очистки узлов с весами выше порога
 pub async fn start_processor(
     sm: Arc<StateMachineStore>,
     raft: Raft,
@@ -65,7 +65,7 @@ pub async fn start_processor(
                 continue;
             }
 
-            (all_nodes, state_machine.dag.clone()) // TODO: сделать так везде. Клонируем DAG, чтобы освободить блокировку
+            (all_nodes, state_machine.dag.clone()) // TODO: сделать так везде. Клонируем Dag, чтобы освободить блокировку
         };
 
         // TODO подумать как везде вместо clone юзать ссылку
@@ -74,7 +74,7 @@ pub async fn start_processor(
             .clone()
             .into_iter()
             .filter(|node_hash| {
-                // Проверяем, существует ли узел в DAG
+                // Проверяем, существует ли узел в Dag
                 if let Some(node) = dag.get_nodes().get(node_hash) {
                     // Узел подходит для удаления, если у него нет активных родителей
                     node.parents.is_empty()

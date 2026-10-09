@@ -15,7 +15,7 @@ use super::typ::*;
 use crate::TypeConfig;
 
 use super::db::Db;
-use crate::graph::dag::{DAG, extract_from_var_struct};
+use crate::graph::dag::{Dag, extract_from_var_struct};
 use crate::utils::validate_func;
 
 /// Детерминированная валидация команды `Add` в state machine.
@@ -27,15 +27,15 @@ use crate::utils::validate_func;
 /// Ограничение на количество родителей (2..100) намеренно не проверяется здесь:
 /// это политика входного API, а генезис-узлы легитимно имеют пустой список
 /// родителей. Проверка длины остаётся на границе (`validate_parents`).
-fn validate_add(dag: &DAG, hash: &str, tx: &crate::Tx, func: &str) -> Result<(), String> {
+fn validate_add(dag: &Dag, hash: &str, tx: &crate::Tx, func: &str) -> Result<(), String> {
     let hash: std::sync::Arc<str> = std::sync::Arc::from(hash);
 
-    // Узел с таким хэшем не должен уже существовать (ни в DAG, ни в реестре added).
+    // Узел с таким хэшем не должен уже существовать (ни в Dag, ни в реестре added).
     if dag.contains_node(&hash) || dag.is_node_added(&hash) {
         return Err("node already exists".to_string());
     }
 
-    // Родители: уникальны, непусты и существуют (в DAG или в реестре added).
+    // Родители: уникальны, непусты и существуют (в Dag или в реестре added).
     let mut seen = std::collections::HashSet::new();
     for parent in &tx.prnts {
         if parent.trim().is_empty() {
@@ -61,9 +61,9 @@ fn validate_add(dag: &DAG, hash: &str, tx: &crate::Tx, func: &str) -> Result<(),
 
 /// Детерминированная валидация команды `Remove` в state machine.
 ///
-/// Список не пуст, все узлы существуют в DAG. Пустой/частично отсутствующий
+/// Список не пуст, все узлы существуют в Dag. Пустой/частично отсутствующий
 /// список не применяется.
-fn validate_remove(dag: &DAG, nodes: &[std::sync::Arc<str>]) -> Result<(), String> {
+fn validate_remove(dag: &Dag, nodes: &[std::sync::Arc<str>]) -> Result<(), String> {
     if nodes.is_empty() {
         return Err("node list is empty".to_string());
     }
@@ -97,7 +97,7 @@ pub struct StateMachineData {
     pub last_membership: StoredMembership,
 
     /// Application data.
-    pub dag: DAG,
+    pub dag: Dag,
 }
 
 /// Defines a state machine for the Raft cluster. This state machine represents a copy of the
@@ -127,7 +127,7 @@ const KEY_SM_SNAPSHOT: &str = "sm_snapshot";
 
 impl StateMachineStore {
     /// Открывает персистентное state machine по пути `path`, восстанавливая
-    /// ранее сохранённое состояние (DAG, `added`, `last_applied`, membership).
+    /// ранее сохранённое состояние (Dag, `added`, `last_applied`, membership).
     pub fn open(path: &std::path::Path) -> Result<Arc<Self>, String> {
         let db = Db::open(path)?;
 
@@ -272,7 +272,7 @@ impl RaftStateMachine<TypeConfig> for Arc<StateMachineStore> {
                     } => {
                         // Детерминированная валидация: не зависит от сети/времени и
                         // одинакова на всех репликах. Применяется валидная команда,
-                        // невалидная логируется и возвращает ошибку без изменения DAG.
+                        // невалидная логируется и возвращает ошибку без изменения Dag.
                         match validate_add(&sm.dag, hash, tx, func) {
                             Ok(()) => match sm.dag.add_node_with_parents(
                                 hash.clone(),
@@ -300,7 +300,7 @@ impl RaftStateMachine<TypeConfig> for Arc<StateMachineStore> {
                     }
                     Request::Remove { nodes } => {
                         // Детерминированная валидация удаления: все узлы обязаны
-                        // существовать в DAG. Пустой список невалиден.
+                        // существовать в Dag. Пустой список невалиден.
                         match validate_remove(&sm.dag, nodes) {
                             Ok(()) => match sm.dag.remove_nodes(nodes.clone()) {
                                 Ok(()) => res.push(Response {
@@ -409,13 +409,13 @@ mod tests {
 
     #[test]
     fn add_accepts_genesis_without_parents() {
-        let dag = DAG::new();
+        let dag = Dag::new();
         assert!(validate_add(&dag, "genesis", &valid_tx_var(), "transferToken").is_ok());
     }
 
     #[test]
     fn add_rejects_duplicate_node() {
-        let mut dag = DAG::new();
+        let mut dag = Dag::new();
         let hash: Arc<str> = Arc::from("n1");
         dag.add_node_with_parents(
             hash.clone(),
@@ -430,7 +430,7 @@ mod tests {
 
     #[test]
     fn add_rejects_missing_parent() {
-        let dag = DAG::new();
+        let dag = Dag::new();
         let err = validate_add(
             &dag,
             "n2",
@@ -444,7 +444,7 @@ mod tests {
     #[test]
     fn add_rejects_duplicate_parents() {
         // Оба родителя должны существовать, чтобы дойти до проверки уникальности.
-        let mut dag = DAG::new();
+        let mut dag = Dag::new();
         let parent_a: Arc<str> = Arc::from("pa");
         let parent_b: Arc<str> = Arc::from("pb");
         dag.add_node_with_parents(
@@ -468,14 +468,14 @@ mod tests {
 
     #[test]
     fn add_rejects_unknown_func() {
-        let dag = DAG::new();
+        let dag = Dag::new();
         let err = validate_add(&dag, "n4", &valid_tx_var(), "noSuchFunc").unwrap_err();
         assert!(err.contains("unknown func"));
     }
 
     #[test]
     fn add_rejects_invalid_var() {
-        let dag = DAG::new();
+        let dag = Dag::new();
         let mut bad = valid_tx_var();
         bad.var = json!({ "totally": "wrong" });
         let err = validate_add(&dag, "n5", &bad, "transferToken").unwrap_err();
@@ -484,7 +484,7 @@ mod tests {
 
     #[test]
     fn add_accepts_existing_parent() {
-        let mut dag = DAG::new();
+        let mut dag = Dag::new();
         let parent: Arc<str> = Arc::from("root");
         dag.add_node_with_parents(
             parent.clone(),
@@ -498,20 +498,20 @@ mod tests {
 
     #[test]
     fn remove_rejects_empty_list() {
-        let dag = DAG::new();
+        let dag = Dag::new();
         assert!(validate_remove(&dag, &[]).is_err());
     }
 
     #[test]
     fn remove_rejects_missing_node() {
-        let dag = DAG::new();
+        let dag = Dag::new();
         let nodes = vec![Arc::from("ghost")];
         assert!(validate_remove(&dag, &nodes).is_err());
     }
 
     #[test]
     fn remove_accepts_existing_node() {
-        let mut dag = DAG::new();
+        let mut dag = Dag::new();
         let node: Arc<str> = Arc::from("n");
         dag.add_node_with_parents(
             node.clone(),
@@ -540,7 +540,7 @@ mod tests {
     async fn state_machine_state_survives_reopen() {
         let path = temp_path("survive");
 
-        // Первый запуск: наполняем DAG и помечаем узел как удалённый (added).
+        // Первый запуск: наполняем Dag и помечаем узел как удалённый (added).
         {
             let store = StateMachineStore::open(&path).unwrap();
             let mut sm = store.state_machine.write().await;
@@ -575,7 +575,7 @@ mod tests {
             let sm = store.state_machine.read().await;
             assert!(
                 sm.dag.contains_node(&Arc::from("node-1")),
-                "DAG должен пережить рестарт"
+                "Dag должен пережить рестарт"
             );
             assert!(
                 sm.dag.is_node_added(&Arc::from("node-2")),
@@ -591,5 +591,110 @@ mod tests {
         let store = StateMachineStore::default();
         let sm = store.state_machine.read().await;
         store.persist(&sm).unwrap();
+    }
+
+    #[tokio::test]
+    async fn apply_add_then_reopen_restores_dag() {
+        use crate::raft::typ::Entry;
+        use openraft::entry::RaftEntry;
+
+        let path = temp_path("apply-add");
+        let node_hash: Arc<str> = Arc::from("node-1");
+        let req = Request::Add {
+            hash: node_hash.clone(),
+            tx: valid_tx_var(),
+            sign: String::new(),
+            func: "transferToken".to_string(),
+        };
+        let log_id = openraft::testing::log_id::<TypeConfig>(1, 1, 1);
+        let entry = Entry::new(log_id, EntryPayload::Normal(req));
+
+        {
+            let store = StateMachineStore::open(&path).unwrap();
+            let mut sm = store.clone();
+            let res = sm.apply(vec![entry]).await.unwrap();
+            assert_eq!(res[0].value.as_deref(), Some("Ok"));
+            assert!(
+                store
+                    .state_machine
+                    .read()
+                    .await
+                    .dag
+                    .contains_node(&node_hash)
+            );
+        }
+
+        {
+            let store = StateMachineStore::open(&path).unwrap();
+            let sm = store.state_machine.read().await;
+            assert!(
+                sm.dag.contains_node(&node_hash),
+                "Dag должен восстановиться после рестарта"
+            );
+            assert_eq!(sm.last_applied, Some(log_id));
+        }
+    }
+
+    #[tokio::test]
+    async fn apply_rejects_duplicate_add_and_remove_roundtrip() {
+        use crate::raft::typ::Entry;
+        use openraft::entry::RaftEntry;
+
+        let path = temp_path("apply-dup");
+        let node_hash: Arc<str> = Arc::from("node-1");
+        let add = Request::Add {
+            hash: node_hash.clone(),
+            tx: valid_tx_var(),
+            sign: String::new(),
+            func: "transferToken".to_string(),
+        };
+
+        let store = StateMachineStore::open(&path).unwrap();
+        let mut sm = store.clone();
+
+        // Первое добавление успешно.
+        let e1 = Entry::new(
+            openraft::testing::log_id::<TypeConfig>(1, 1, 1),
+            EntryPayload::Normal(add.clone()),
+        );
+        assert_eq!(
+            sm.apply(vec![e1]).await.unwrap()[0].value.as_deref(),
+            Some("Ok")
+        );
+
+        // Повторное добавление того же узла отклоняется (уникальность хэша).
+        let e2 = Entry::new(
+            openraft::testing::log_id::<TypeConfig>(1, 1, 2),
+            EntryPayload::Normal(add),
+        );
+        let dup = sm.apply(vec![e2]).await.unwrap();
+        assert!(dup[0].value.as_deref().unwrap().starts_with("Error"));
+        assert_eq!(store.state_machine.read().await.dag.get_node_count(), 1);
+
+        // Удаляем узел: он уходит в added.
+        let remove = Request::Remove {
+            nodes: vec![node_hash.clone()],
+        };
+        let e3 = Entry::new(
+            openraft::testing::log_id::<TypeConfig>(1, 1, 3),
+            EntryPayload::Normal(remove),
+        );
+        assert_eq!(
+            sm.apply(vec![e3]).await.unwrap()[0].value.as_deref(),
+            Some("Ok")
+        );
+        {
+            let guard = store.state_machine.read().await;
+            assert!(!guard.dag.contains_node(&node_hash));
+            assert!(guard.dag.is_node_added(&node_hash));
+        }
+
+        // После reopen: узел остаётся удалённым (added переживает рестарт).
+        drop(sm);
+        drop(store);
+        let reopened = StateMachineStore::open(&path).unwrap();
+        let guard = reopened.state_machine.read().await;
+        assert!(!guard.dag.contains_node(&node_hash));
+        assert!(guard.dag.is_node_added(&node_hash));
     }
 }

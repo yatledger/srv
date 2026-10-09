@@ -21,6 +21,35 @@ pub fn validate_func(func: &str) -> Result<(), String> {
     }
 }
 
+/// Проверяет подпись ed25519 транзакции.
+///
+/// `addr` — публичный ключ в base58, `sign` — подпись в hex, `message` — байты,
+/// которые были подписаны (канонический хэш контента транзакции). Возвращает
+/// человекочитаемую ошибку без паник. Детерминирована и не зависит от сети/времени.
+pub fn verify_signature(addr: &str, sign: &str, message: &[u8]) -> Result<(), String> {
+    use base58::FromBase58;
+    use ed25519_dalek::{Signature, Verifier, VerifyingKey};
+    use hex::FromHex;
+
+    let signature_bytes =
+        <[u8; 64]>::from_hex(sign).map_err(|_| "invalid hex for signature".to_string())?;
+    let signature = Signature::try_from(signature_bytes.as_ref())
+        .map_err(|_| "invalid signature format".to_string())?;
+
+    let addr_bytes = addr
+        .from_base58()
+        .map_err(|_| "invalid base58 in signature verification".to_string())?;
+    let addr_array: [u8; 32] = addr_bytes
+        .try_into()
+        .map_err(|_| "invalid Ed25519 key length".to_string())?;
+    let verify_key = VerifyingKey::from_bytes(&addr_array)
+        .map_err(|_| "invalid Ed25519 public key".to_string())?;
+
+    verify_key
+        .verify(message, &signature)
+        .map_err(|_| "signature verification failed".to_string())
+}
+
 /// Вычисляет хэш подписываемого контента транзакции.
 ///
 /// В контент входят все поля `Tx` **и** `func`. Для устранения неоднозначностей
@@ -201,5 +230,70 @@ mod tests {
     fn validate_parents_rejects_empty_and_duplicates() {
         assert!(validate_parents(&[Arc::from(""), Arc::from("b")]).is_err());
         assert!(validate_parents(&[Arc::from("a"), Arc::from("a")]).is_err());
+    }
+
+    fn signing_key() -> ed25519_dalek::SigningKey {
+        ed25519_dalek::SigningKey::from_bytes(&[7u8; 32])
+    }
+
+    fn keypair() -> (String, ed25519_dalek::SigningKey) {
+        use base58::ToBase58;
+        let sk = signing_key();
+        let addr = sk.verifying_key().to_bytes().to_base58();
+        (addr, sk)
+    }
+
+    fn sign(sk: &ed25519_dalek::SigningKey, message: &[u8]) -> String {
+        use ed25519_dalek::Signer;
+        hex::encode(sk.sign(message).to_bytes())
+    }
+
+    #[test]
+    fn verify_signature_accepts_valid_signature() {
+        let (addr, sk) = keypair();
+        let message = b"canonical hash bytes";
+        let sig = sign(&sk, message);
+
+        assert!(verify_signature(&addr, &sig, message).is_ok());
+    }
+
+    #[test]
+    fn verify_signature_rejects_tampered_message() {
+        let (addr, sk) = keypair();
+        let sig = sign(&sk, b"original message");
+        // Подпись валидна, но сообщение подменено.
+        assert!(verify_signature(&addr, &sig, b"tampered message").is_err());
+    }
+
+    #[test]
+    fn verify_signature_rejects_substituted_func_in_hash() {
+        // Критичный кейс K2: подмена func меняет хэш, а значит ломает подпись.
+        let (addr, sk) = keypair();
+        let tx = tx_with_var(json!({ "ca": "a", "to": "b", "val": 5 }));
+        let signed_hash = ordered_sum(&tx, "transferToken").unwrap();
+        let sig = hex::encode(ed25519_dalek::Signer::sign(&sk, signed_hash.as_bytes()).to_bytes());
+
+        let forged_hash = ordered_sum(&tx, "otherFunc").unwrap();
+        assert!(
+            verify_signature(&addr, &sig, forged_hash.as_bytes()).is_err(),
+            "подмена func не должна проходить проверку подписи"
+        );
+        assert!(verify_signature(&addr, &sig, signed_hash.as_bytes()).is_ok());
+    }
+
+    #[test]
+    fn verify_signature_rejects_malformed_inputs() {
+        let (addr, sk) = keypair();
+        let message = b"m";
+        let sig = sign(&sk, message);
+
+        // Не-hex подпись.
+        assert!(verify_signature(&addr, "not-hex", message).is_err());
+        // Неверная длина подписи.
+        assert!(verify_signature(&addr, "abcd", message).is_err());
+        // Невалидный base58-адрес.
+        assert!(verify_signature("!!!not-base58!!!", &sig, message).is_err());
+        // Валидный base58, но неверная длина ключа.
+        assert!(verify_signature("1111", &sig, message).is_err());
     }
 }
