@@ -14,7 +14,67 @@ use super::command::{Request, Response};
 use super::typ::*;
 use crate::TypeConfig;
 
-use crate::graph::dag::DAG;
+use crate::graph::dag::{DAG, extract_from_var_struct};
+use crate::utils::validate_func;
+
+/// Детерминированная валидация команды `Add` в state machine.
+///
+/// Проверки не зависят от сети/времени и дают одинаковый результат на всех
+/// репликах при одинаковом состоянии: уникальность узла, существование и
+/// уникальность родителей, допустимость `func` и структуры `var`.
+///
+/// Ограничение на количество родителей (2..100) намеренно не проверяется здесь:
+/// это политика входного API, а генезис-узлы легитимно имеют пустой список
+/// родителей. Проверка длины остаётся на границе (`validate_parents`).
+fn validate_add(dag: &DAG, hash: &str, tx: &crate::Tx, func: &str) -> Result<(), String> {
+    let hash: std::sync::Arc<str> = std::sync::Arc::from(hash);
+
+    // Узел с таким хэшем не должен уже существовать (ни в DAG, ни в реестре added).
+    if dag.contains_node(&hash) || dag.is_node_added(&hash) {
+        return Err("node already exists".to_string());
+    }
+
+    // Родители: уникальны, непусты и существуют (в DAG или в реестре added).
+    let mut seen = std::collections::HashSet::new();
+    for parent in &tx.prnts {
+        if parent.trim().is_empty() {
+            return Err("parent must not be empty".to_string());
+        }
+        if !seen.insert(parent.clone()) {
+            return Err("parents must be unique".to_string());
+        }
+        if !dag.contains_node(parent) && !dag.is_node_added(parent) {
+            return Err(format!("parent {parent} does not exist"));
+        }
+    }
+
+    validate_func(func)?;
+
+    // Структура `var` обязательна для известных функций.
+    if func == "transferToken" {
+        extract_from_var_struct(tx)?.validate()?;
+    }
+
+    Ok(())
+}
+
+/// Детерминированная валидация команды `Remove` в state machine.
+///
+/// Список не пуст, все узлы существуют в DAG. Пустой/частично отсутствующий
+/// список не применяется.
+fn validate_remove(dag: &DAG, nodes: &[std::sync::Arc<str>]) -> Result<(), String> {
+    if nodes.is_empty() {
+        return Err("node list is empty".to_string());
+    }
+
+    for node in nodes {
+        if !dag.contains_node(node) {
+            return Err(format!("node {node} does not exist"));
+        }
+    }
+
+    Ok(())
+}
 
 #[derive(Debug)]
 pub struct StoredSnapshot {
@@ -144,55 +204,55 @@ impl RaftStateMachine<TypeConfig> for Arc<StateMachineStore> {
                         sign,
                         func,
                     } => {
-                        // --- ВАША ЛОГИКА ВАЛИДАЦИИ ---
-                        // Например, проверяем, что все родители существуют
-                        // let parents_exist = tx.prnts.iter().all(|p| sm.dag.get_nodes().contains_key(p));
-                        let parents_exist = true;
-
-                        if !parents_exist {
-                            // Проверка не пройдена. НЕ меняем DAG.
-                            // Отправляем клиенту сообщение об ошибке.
-                            tracing::warn!(
-                                "Validation failed for Add request: parents do not exist."
-                            );
-                            res.push(Response {
-                                value: Some("Error: One or more parents not found.".to_string()),
-                            });
-                        } else {
-                            // Проверка пройдена. Меняем DAG.
-                            let _ = sm.dag.add_node_with_parents(
+                        // Детерминированная валидация: не зависит от сети/времени и
+                        // одинакова на всех репликах. Применяется валидная команда,
+                        // невалидная логируется и возвращает ошибку без изменения DAG.
+                        match validate_add(&sm.dag, hash, tx, func) {
+                            Ok(()) => match sm.dag.add_node_with_parents(
                                 hash.clone(),
                                 tx.clone(),
                                 sign.clone(),
                                 func.clone(),
-                            );
-                            res.push(Response {
-                                value: Some("Ok".to_string()),
-                            });
+                            ) {
+                                Ok(()) => res.push(Response {
+                                    value: Some("Ok".to_string()),
+                                }),
+                                Err(e) => {
+                                    tracing::warn!("Failed to apply Add request: {}", e);
+                                    res.push(Response {
+                                        value: Some(format!("Error: {e}")),
+                                    });
+                                }
+                            },
+                            Err(e) => {
+                                tracing::warn!("Validation failed for Add request: {}", e);
+                                res.push(Response {
+                                    value: Some(format!("Error: {e}")),
+                                });
+                            }
                         }
                     }
                     Request::Remove { nodes } => {
-                        // --- ВАША ЛОГИКА ВАЛИДАЦИИ ---
-                        // Например, проверяем, что узлы вообще существуют перед удалением
-                        // let nodes_exist = nodes.iter().all(|n| sm.dag.get_nodes().contains_key(n));
-                        let nodes_exist = true;
-
-                        if !nodes_exist {
-                            // Проверка не пройдена. НЕ меняем DAG.
-                            tracing::warn!(
-                                "Validation failed for Remove request: nodes do not exist."
-                            );
-                            res.push(Response {
-                                value: Some(
-                                    "Error: One or more nodes for removal not found.".to_string(),
-                                ),
-                            });
-                        } else {
-                            // Проверка пройдена. Меняем DAG.
-                            let _ = sm.dag.remove_nodes(nodes.clone());
-                            res.push(Response {
-                                value: Some("Ok".to_string()),
-                            });
+                        // Детерминированная валидация удаления: все узлы обязаны
+                        // существовать в DAG. Пустой список невалиден.
+                        match validate_remove(&sm.dag, nodes) {
+                            Ok(()) => match sm.dag.remove_nodes(nodes.clone()) {
+                                Ok(()) => res.push(Response {
+                                    value: Some("Ok".to_string()),
+                                }),
+                                Err(e) => {
+                                    tracing::warn!("Failed to apply Remove request: {}", e);
+                                    res.push(Response {
+                                        value: Some(format!("Error: {e}")),
+                                    });
+                                }
+                            },
+                            Err(e) => {
+                                tracing::warn!("Validation failed for Remove request: {}", e);
+                                res.push(Response {
+                                    value: Some(format!("Error: {e}")),
+                                });
+                            }
                         }
                     }
                 },
@@ -252,5 +312,142 @@ impl RaftStateMachine<TypeConfig> for Arc<StateMachineStore> {
 
     async fn get_snapshot_builder(&mut self) -> Self::SnapshotBuilder {
         self.clone()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::Tx;
+    use serde_json::json;
+    use std::sync::Arc;
+
+    fn tx(parents: &[&str]) -> Tx {
+        Tx {
+            prnts: parents.iter().map(|p| Arc::from(*p)).collect(),
+            addr: Arc::from("addr"),
+            seq: 0,
+            var: json!({ "ca": "a", "to": "b", "val": 1, "msg": "m" }),
+        }
+    }
+
+    fn valid_tx_var() -> Tx {
+        tx(&[])
+    }
+
+    #[test]
+    fn add_accepts_genesis_without_parents() {
+        let dag = DAG::new();
+        assert!(validate_add(&dag, "genesis", &valid_tx_var(), "transferToken").is_ok());
+    }
+
+    #[test]
+    fn add_rejects_duplicate_node() {
+        let mut dag = DAG::new();
+        let hash: Arc<str> = Arc::from("n1");
+        dag.add_node_with_parents(
+            hash.clone(),
+            valid_tx_var(),
+            String::new(),
+            "transferToken".to_string(),
+        )
+        .unwrap();
+        let err = validate_add(&dag, "n1", &valid_tx_var(), "transferToken").unwrap_err();
+        assert!(err.contains("already exists"));
+    }
+
+    #[test]
+    fn add_rejects_missing_parent() {
+        let dag = DAG::new();
+        let err = validate_add(
+            &dag,
+            "n2",
+            &tx(&["missing-a", "missing-b"]),
+            "transferToken",
+        )
+        .unwrap_err();
+        assert!(err.contains("does not exist"));
+    }
+
+    #[test]
+    fn add_rejects_duplicate_parents() {
+        // Оба родителя должны существовать, чтобы дойти до проверки уникальности.
+        let mut dag = DAG::new();
+        let parent_a: Arc<str> = Arc::from("pa");
+        let parent_b: Arc<str> = Arc::from("pb");
+        dag.add_node_with_parents(
+            parent_a.clone(),
+            valid_tx_var(),
+            String::new(),
+            "transferToken".to_string(),
+        )
+        .unwrap();
+        dag.add_node_with_parents(
+            parent_b.clone(),
+            valid_tx_var(),
+            String::new(),
+            "transferToken".to_string(),
+        )
+        .unwrap();
+
+        let err = validate_add(&dag, "n3", &tx(&["pa", "pa"]), "transferToken").unwrap_err();
+        assert!(err.contains("unique"));
+    }
+
+    #[test]
+    fn add_rejects_unknown_func() {
+        let dag = DAG::new();
+        let err = validate_add(&dag, "n4", &valid_tx_var(), "noSuchFunc").unwrap_err();
+        assert!(err.contains("unknown func"));
+    }
+
+    #[test]
+    fn add_rejects_invalid_var() {
+        let dag = DAG::new();
+        let mut bad = valid_tx_var();
+        bad.var = json!({ "totally": "wrong" });
+        let err = validate_add(&dag, "n5", &bad, "transferToken").unwrap_err();
+        assert!(err.contains("var"));
+    }
+
+    #[test]
+    fn add_accepts_existing_parent() {
+        let mut dag = DAG::new();
+        let parent: Arc<str> = Arc::from("root");
+        dag.add_node_with_parents(
+            parent.clone(),
+            valid_tx_var(),
+            String::new(),
+            "transferToken".to_string(),
+        )
+        .unwrap();
+        assert!(validate_add(&dag, "child", &tx(&["root"]), "transferToken").is_ok());
+    }
+
+    #[test]
+    fn remove_rejects_empty_list() {
+        let dag = DAG::new();
+        assert!(validate_remove(&dag, &[]).is_err());
+    }
+
+    #[test]
+    fn remove_rejects_missing_node() {
+        let dag = DAG::new();
+        let nodes = vec![Arc::from("ghost")];
+        assert!(validate_remove(&dag, &nodes).is_err());
+    }
+
+    #[test]
+    fn remove_accepts_existing_node() {
+        let mut dag = DAG::new();
+        let node: Arc<str> = Arc::from("n");
+        dag.add_node_with_parents(
+            node.clone(),
+            valid_tx_var(),
+            String::new(),
+            "transferToken".to_string(),
+        )
+        .unwrap();
+        assert!(validate_remove(&dag, &[node]).is_ok());
     }
 }
