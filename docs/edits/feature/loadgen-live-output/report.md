@@ -32,13 +32,19 @@
   Причина — в демо фактические параметры задаются демо-дефолтами (`tps=0`, `concurrency=1`,
   `duration_sec=60`), а `Report.params` строится из «сырого» `LoadgenConfig`, поэтому строка
   выводила бы вводящие в заблуждение значения. JSON-схема `Report` не менялась.
+- **Случайный узел-приёмник.** Запросы уходят на случайный узел кластера, не-лидер форвардит лидеру.
+  Родители берутся из `/pool` **целевого** узла (кэш `Vec<Option<Vec<Hash>>>` — отдельно на узел),
+  что исключает ложные `409` от отставшей реплики. Выбор узла — отдельным ГПСЧ (`node_seed`), поэтому
+  воспроизводимость параметров транзакций при одном `--seed` сохраняется. `resolve_leader` теперь
+  возвращает id лидера (для роли в выводе). Проверено: `--tx 40 --concurrency 4` → 40/40,
+  `--tx 300 --concurrency 8` → 300/300, реплики совпадают, задействованы все 3 узла.
 
 ## Изменённые файлы
 
 | Файл | Действие |
 |---|---|
 | `src/bin/loadgen/main.rs` | флаги, демо-детект, `resolve`, `parse_sleep_secs`, тесты |
-| `src/bin/loadgen/runner.rs` | `Sleep`, `RunConfig.{show_tx,sleep}`, `sleep_between`, `sleep_seed`, атомарный вывод, `render_frame` |
+| `src/bin/loadgen/runner.rs` | `Sleep`, `RunConfig.{show_tx,sleep}`, `sleep_between`, `sleep_seed`/`node_seed`, случайный выбор узла + per-node `/pool`, атомарный вывод, `render_frame` |
 | `src/bin/loadgen/report.rs` | `Palette`, форматтеры блока, тесты |
 | `src/bin/loadgen/prng.rs` | `Prng::range_f64`, тест |
 | `README.md` | флаги `--show-tx`/`--sleep`, раздел «Демонстрационный режим» |
@@ -53,12 +59,14 @@
 |---|---|
 | `cargo fmt --all -- --check` | ✅ OK |
 | `cargo clippy --all-targets -- -D warnings` | ✅ OK |
-| `cargo test --all` | ✅ 24 unit + 5 api + 1 cluster — все зелёные (Redis доступен) |
+| `cargo test --all` | ✅ 26 unit + 5 api + 1 cluster — все зелёные (Redis доступен) |
 | Ручной демо-прогон (без параметров, `timeout 9`) | ✅ печатает цветные блоки, идёт медленно |
 | `--show-tx --sleep 0 --tx 6 --concurrency 2` | ✅ 6 блоков, все `200 OK`, отчёт OK |
 | `--tx 4 --json-out …` | ✅ 0 блоков, JSON-отчёт записан |
 | Демо без параметров (полный прогон, ~60 с) | ✅ строка «параметры» не печатается |
 | `--tx 3` (явный флаг) | ✅ строка «параметры» печатается |
+| Случайные узлы: `--show-tx --sleep 0 --tx 40 --concurrency 4` | ✅ 40/40, все 3 узла (`лидер`/`follower → лидер`), реплики равны |
+| Случайные узлы: `--tx 300 --concurrency 8 --json-out` | ✅ 300/300, `ok=true`, реплики равны (303) |
 
 ## Отклонения от плана
 
