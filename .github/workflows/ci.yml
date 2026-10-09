@@ -4,6 +4,11 @@ on:
   push:
     branches: [main]
   pull_request:
+  # Нагрузочная задача (job `load`) запускается вручную или по расписанию,
+  # не удлиняя обычный PR-пайплайн.
+  workflow_dispatch:
+  schedule:
+    - cron: "0 3 * * *" # nightly, 03:00 UTC
 
 env:
   CARGO_TERM_COLOR: always
@@ -49,3 +54,48 @@ jobs:
 
       - name: Test
         run: cargo test --all
+
+  # Нагрузочная корректностная проверка (N01). Отдельный job: не входит в PR-пайплайн,
+  # запускается вручную (`workflow_dispatch`) или nightly. Падает при нарушении
+  # корректностных инвариантов (отказ валидной транзакции или расхождение реплик).
+  load:
+    name: loadgen (корректность под нагрузкой)
+    if: github.event_name == 'workflow_dispatch' || github.event_name == 'schedule'
+    runs-on: ubuntu-latest
+    services:
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+    env:
+      REDIS_URL: redis://127.0.0.1:6379/0
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: Build loadgen (release)
+        run: cargo build --release --bin loadgen
+
+      - name: Run loadgen (short correctness run)
+        run: |
+          ./target/release/loadgen \
+            --nodes 3 --tx 300 --tps 300 --concurrency 8 --accounts 16 \
+            --json-out loadgen-report.json
+
+      - name: Upload loadgen report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: loadgen-report
+          path: loadgen-report.json
+          if-no-files-found: warn
