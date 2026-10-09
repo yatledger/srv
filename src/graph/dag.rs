@@ -351,9 +351,13 @@ impl Serialize for DAG {
     where
         S: Serializer,
     {
-        let mut map = serializer.serialize_map(Some(1))?;
+        // В снапшот/на диск обязаны попадать и узлы, и реестр `added`, иначе
+        // удалённые узлы «воскреснут» после рестарта (нарушение инварианта).
+        let mut map = serializer.serialize_map(Some(2))?;
         let nodes: HashMap<&str, &Node> = self.nodes.iter().map(|(k, v)| (k.as_ref(), v)).collect();
+        let added: HashMap<&str, &u64> = self.added.iter().map(|(k, v)| (k.as_ref(), v)).collect();
         map.serialize_entry("nodes", &nodes)?;
+        map.serialize_entry("added", &added)?;
         map.end()
     }
 }

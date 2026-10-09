@@ -14,6 +14,7 @@ use super::command::{Request, Response};
 use super::typ::*;
 use crate::TypeConfig;
 
+use super::db::Db;
 use crate::graph::dag::{DAG, extract_from_var_struct};
 use crate::utils::validate_func;
 
@@ -101,6 +102,10 @@ pub struct StateMachineData {
 
 /// Defines a state machine for the Raft cluster. This state machine represents a copy of the
 /// data for this node. Additionally, it is responsible for storing the last snapshot of the data.
+///
+/// Когда `db` задан (`StateMachineStore::open`), состояние персистится в `redb`;
+/// при `db == None` (конструктор по умолчанию) хранилище остаётся in-memory и
+/// используется в тестах.
 #[derive(Debug, Default)]
 pub struct StateMachineStore {
     /// The Raft state machine.
@@ -110,6 +115,64 @@ pub struct StateMachineStore {
 
     /// The last received snapshot.
     current_snapshot: Mutex<Option<StoredSnapshot>>,
+
+    /// Персистентное хранилище (None для in-memory режима).
+    db: Option<Db>,
+}
+
+/// Именованные ключи в таблице метаданных для state machine.
+const KEY_SM_LAST_APPLIED: &str = "sm_last_applied";
+const KEY_SM_MEMBERSHIP: &str = "sm_membership";
+const KEY_SM_SNAPSHOT: &str = "sm_snapshot";
+
+impl StateMachineStore {
+    /// Открывает персистентное state machine по пути `path`, восстанавливая
+    /// ранее сохранённое состояние (DAG, `added`, `last_applied`, membership).
+    pub fn open(path: &std::path::Path) -> Result<Arc<Self>, String> {
+        let db = Db::open(path)?;
+
+        let state_machine: StateMachineData = match db.meta_get(KEY_SM_SNAPSHOT)? {
+            Some(bytes) => serde_json::from_slice(&bytes).map_err(|e| e.to_string())?,
+            None => StateMachineData::default(),
+        };
+
+        Ok(Arc::new(Self {
+            state_machine: RwLock::new(state_machine),
+            snapshot_idx: Mutex::new(0),
+            current_snapshot: Mutex::new(None),
+            db: Some(db),
+        }))
+    }
+
+    /// Сохраняет состояние в `redb`. В in-memory режиме ничего не делает.
+    fn persist(&self, sm: &StateMachineData) -> Result<(), String> {
+        let Some(db) = &self.db else {
+            return Ok(());
+        };
+
+        let snapshot = serde_json::to_vec(sm).map_err(|e| e.to_string())?;
+        db.meta_set(KEY_SM_SNAPSHOT, &snapshot)?;
+
+        match sm.last_applied {
+            Some(log_id) => {
+                let bytes = serde_json::to_vec(&log_id).map_err(|e| e.to_string())?;
+                db.meta_set(KEY_SM_LAST_APPLIED, &bytes)?;
+            }
+            None => db.meta_remove(KEY_SM_LAST_APPLIED)?,
+        }
+
+        let membership = serde_json::to_vec(&sm.last_membership).map_err(|e| e.to_string())?;
+        db.meta_set(KEY_SM_MEMBERSHIP, &membership)?;
+        Ok(())
+    }
+}
+
+fn sm_storage_error(verb: openraft::ErrorVerb, e: String) -> StorageError {
+    StorageError::new(
+        openraft::ErrorSubject::StateMachine,
+        verb,
+        openraft::AnyError::error(e),
+    )
 }
 
 impl RaftSnapshotBuilder<TypeConfig> for Arc<StateMachineStore> {
@@ -157,6 +220,9 @@ impl RaftSnapshotBuilder<TypeConfig> for Arc<StateMachineStore> {
             meta: meta.clone(),
             data: data.clone(),
         };
+
+        self.persist(&data)
+            .map_err(|e| sm_storage_error(openraft::ErrorVerb::Write, e))?;
 
         {
             let mut current_snapshot = self.current_snapshot.lock().unwrap();
@@ -262,6 +328,10 @@ impl RaftStateMachine<TypeConfig> for Arc<StateMachineStore> {
                 }
             };
         }
+
+        self.persist(&sm)
+            .map_err(|e| sm_storage_error(openraft::ErrorVerb::Write, e))?;
+
         Ok(res)
     }
 
@@ -286,6 +356,8 @@ impl RaftStateMachine<TypeConfig> for Arc<StateMachineStore> {
         // Update the state machine.
         {
             let updated_state_machine: StateMachineData = new_snapshot.data.clone();
+            self.persist(&updated_state_machine)
+                .map_err(|e| sm_storage_error(openraft::ErrorVerb::Write, e))?;
             let mut state_machine = self.state_machine.write().await;
             *state_machine = updated_state_machine;
         }
@@ -449,5 +521,75 @@ mod tests {
         )
         .unwrap();
         assert!(validate_remove(&dag, &[node]).is_ok());
+    }
+
+    fn temp_path(name: &str) -> std::path::PathBuf {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static COUNTER: AtomicU64 = AtomicU64::new(0);
+        let id = COUNTER.fetch_add(1, Ordering::SeqCst);
+        let dir = std::env::temp_dir().join(format!(
+            "dagdb-sm-test-{}-{}-{id}",
+            std::process::id(),
+            name
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        dir.join("sm.redb")
+    }
+
+    #[tokio::test]
+    async fn state_machine_state_survives_reopen() {
+        let path = temp_path("survive");
+
+        // Первый запуск: наполняем DAG и помечаем узел как удалённый (added).
+        {
+            let store = StateMachineStore::open(&path).unwrap();
+            let mut sm = store.state_machine.write().await;
+            let node: Arc<str> = Arc::from("node-1");
+            sm.dag
+                .add_node_with_parents(
+                    node.clone(),
+                    valid_tx_var(),
+                    String::new(),
+                    "transferToken".to_string(),
+                )
+                .unwrap();
+            let removed: Arc<str> = Arc::from("node-2");
+            sm.dag
+                .add_node_with_parents(
+                    removed.clone(),
+                    valid_tx_var(),
+                    String::new(),
+                    "transferToken".to_string(),
+                )
+                .unwrap();
+            sm.dag.remove_node(removed.clone());
+            store.persist(&sm).unwrap();
+
+            assert!(sm.dag.contains_node(&node));
+            assert!(sm.dag.is_node_added(&removed));
+        }
+
+        // Второй запуск: состояние должно восстановиться, включая реестр added.
+        {
+            let store = StateMachineStore::open(&path).unwrap();
+            let sm = store.state_machine.read().await;
+            assert!(
+                sm.dag.contains_node(&Arc::from("node-1")),
+                "DAG должен пережить рестарт"
+            );
+            assert!(
+                sm.dag.is_node_added(&Arc::from("node-2")),
+                "реестр added должен переживать рестарт"
+            );
+            assert_eq!(sm.dag.get_node_count(), 1);
+        }
+    }
+
+    #[tokio::test]
+    async fn in_memory_store_does_not_persist() {
+        // Default-хранилище остаётся in-memory (без db) — persist безопасен.
+        let store = StateMachineStore::default();
+        let sm = store.state_machine.read().await;
+        store.persist(&sm).unwrap();
     }
 }

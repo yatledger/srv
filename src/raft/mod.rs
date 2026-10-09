@@ -1,5 +1,6 @@
 pub mod api;
 pub mod command;
+pub mod db;
 pub mod log;
 pub mod network;
 pub mod router;

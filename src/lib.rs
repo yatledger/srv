@@ -19,6 +19,7 @@ pub mod web;
 use crate::app::App;
 use crate::config::AppConfig;
 use raft::command::{Request, Response};
+use raft::log::PersistentLogStore;
 use raft::network::NetworkFactory;
 use raft::router::Router as RaftRouter;
 use raft::store::{StateMachineData, StateMachineStore};
@@ -64,11 +65,13 @@ pub async fn start_raft(cfg: &AppConfig) -> Result<(typ::Raft, App), Box<dyn std
 
     let config = Arc::new(config.validate()?);
 
-    // Create a instance of where the Raft logs will be stored.
-    let log_store = LogStore::default();
+    // Персистентные хранилища: Raft-лог и state machine живут в DATA_DIR.
+    let data_dir = cfg.data_dir.clone();
+    std::fs::create_dir_all(&data_dir)?;
 
-    // Create a instance of where the state machine data will be stored.
-    let state_machine_store = Arc::new(StateMachineStore::default());
+    let log_store = PersistentLogStore::open(&data_dir.join("raft-log.redb"))?;
+    let state_machine_store = StateMachineStore::open(&data_dir.join("state-machine.redb"))?;
+
     let raft_router = RaftRouter::new(cfg.raft_http_timeout(), cfg.raft_connect_timeout());
     let network = NetworkFactory::new(raft_router);
 
