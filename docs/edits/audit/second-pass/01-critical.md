@@ -1,11 +1,23 @@
 # ТЗ №1. Критический уровень 🔴
 
-> Группа: **edits/audit/second-pass** · Тип: аудит · Блок задач `K*` · Статус: активен.
+> Группа: **edits/audit/second-pass** · Тип: аудит · Блок задач `K*` · Статус: ✅ **K1–K2 выполнены**.
 > Ссылки на `src/...:NN` — состояние на коммите `a1f4bf0`.
 >
 > Сопутствующие документы: [`audit.md`](audit.md), [`02-important.md`](02-important.md),
 > [`03-quality.md`](03-quality.md), [`tracker.md`](tracker.md).
 > Предыдущий аудит: [`../big-bang/01-critical.md`](../big-bang/01-critical.md) (все задачи закрыты).
+
+## 0. Статус реализации
+
+Обе задачи закрыты (см. журнал в [`tracker.md`](tracker.md)):
+
+- **K1 ✅** — введён `ApplyResult { Ok, Rejected(String) }` и методы `Response`; все точки записи
+  (`add_handler`, `load_genesis`, `archive_and_remove`) проверяют `response.data.as_result()` и
+  возвращают `400`/`audit result=error`; `add_tx` не маскирует отказ лидера (`4xx` сохраняется).
+- **K2 ✅** — `tx_logic::validate_genesis` сверяет хэш с `ordered_sum(tx, func)` и структуру `var`;
+  `genesis.json` перегенерирован канонически; есть регрессионный тест каноничности файла.
+- Регрессионный тест DoD: `tests/api::public_add_rejects_missing_parent_with_4xx`.
+
 
 ## 1. Цель
 

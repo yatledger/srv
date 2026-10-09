@@ -127,7 +127,13 @@ pub async fn archive_and_remove(
         nodes: nodes_to_remove.clone(),
     };
     match app.raft.client_write(request).await {
-        Ok(_) => {
+        Ok(response) => {
+            // Прикладной отказ state machine (например, узел исчез из Dag между
+            // выборкой и применением) не должен считаться успехом (K1/C34).
+            if let Err(reason) = response.data.as_result() {
+                audit::remove(source, app.id, &nodes_to_remove, false, Some(reason));
+                return Err(format!("Remove rejected by state machine: {reason}"));
+            }
             audit::remove(source, app.id, &nodes_to_remove, true, None);
         }
         Err(e) => {

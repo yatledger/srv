@@ -304,7 +304,7 @@ impl RaftStateMachine<TypeConfig> for Arc<StateMachineStore> {
             sm.last_applied = Some(entry.log_id);
 
             match entry.payload {
-                EntryPayload::Blank => res.push(Response { value: None }),
+                EntryPayload::Blank => res.push(Response::blank()),
                 EntryPayload::Normal(ref req) => match req {
                     Request::Add {
                         hash,
@@ -314,7 +314,7 @@ impl RaftStateMachine<TypeConfig> for Arc<StateMachineStore> {
                     } => {
                         // Детерминированная валидация: не зависит от сети/времени и
                         // одинакова на всех репликах. Применяется валидная команда,
-                        // невалидная логируется и возвращает ошибку без изменения Dag.
+                        // невалидная логируется и возвращает отказ без изменения Dag.
                         match validate_add(&sm.dag, hash, tx, func) {
                             Ok(()) => match sm.dag.add_node_with_parents(
                                 hash.clone(),
@@ -322,21 +322,15 @@ impl RaftStateMachine<TypeConfig> for Arc<StateMachineStore> {
                                 sign.clone(),
                                 *func,
                             ) {
-                                Ok(()) => res.push(Response {
-                                    value: Some("Ok".to_string()),
-                                }),
+                                Ok(()) => res.push(Response::ok()),
                                 Err(e) => {
                                     tracing::warn!("Failed to apply Add request: {}", e);
-                                    res.push(Response {
-                                        value: Some(format!("Error: {e}")),
-                                    });
+                                    res.push(Response::rejected(e));
                                 }
                             },
                             Err(e) => {
                                 tracing::warn!("Validation failed for Add request: {}", e);
-                                res.push(Response {
-                                    value: Some(format!("Error: {e}")),
-                                });
+                                res.push(Response::rejected(e));
                             }
                         }
                     }
@@ -345,28 +339,22 @@ impl RaftStateMachine<TypeConfig> for Arc<StateMachineStore> {
                         // существовать в Dag. Пустой список невалиден.
                         match validate_remove(&sm.dag, nodes) {
                             Ok(()) => match sm.dag.remove_nodes(nodes.clone()) {
-                                Ok(()) => res.push(Response {
-                                    value: Some("Ok".to_string()),
-                                }),
+                                Ok(()) => res.push(Response::ok()),
                                 Err(e) => {
                                     tracing::warn!("Failed to apply Remove request: {}", e);
-                                    res.push(Response {
-                                        value: Some(format!("Error: {e}")),
-                                    });
+                                    res.push(Response::rejected(e));
                                 }
                             },
                             Err(e) => {
                                 tracing::warn!("Validation failed for Remove request: {}", e);
-                                res.push(Response {
-                                    value: Some(format!("Error: {e}")),
-                                });
+                                res.push(Response::rejected(e));
                             }
                         }
                     }
                 },
                 EntryPayload::Membership(ref mem) => {
                     sm.last_membership = StoredMembership::new(Some(entry.log_id), mem.clone());
-                    res.push(Response { value: None })
+                    res.push(Response::blank())
                 }
             };
         }
@@ -686,7 +674,7 @@ mod tests {
             let store = StateMachineStore::open(&path).unwrap();
             let mut sm = store.clone();
             let res = sm.apply(vec![entry]).await.unwrap();
-            assert_eq!(res[0].value.as_deref(), Some("Ok"));
+            assert_eq!(res[0], Response::ok());
             assert!(
                 store
                     .state_machine
@@ -730,10 +718,7 @@ mod tests {
             openraft::testing::log_id::<TypeConfig>(1, 1, 1),
             EntryPayload::Normal(add.clone()),
         );
-        assert_eq!(
-            sm.apply(vec![e1]).await.unwrap()[0].value.as_deref(),
-            Some("Ok")
-        );
+        assert_eq!(sm.apply(vec![e1]).await.unwrap()[0], Response::ok());
 
         // Повторное добавление того же узла отклоняется (уникальность хэша).
         let e2 = Entry::new(
@@ -741,7 +726,7 @@ mod tests {
             EntryPayload::Normal(add),
         );
         let dup = sm.apply(vec![e2]).await.unwrap();
-        assert!(dup[0].value.as_deref().unwrap().starts_with("Error"));
+        assert!(dup[0].rejection().is_some());
         assert_eq!(store.state_machine.read().await.dag.get_node_count(), 1);
 
         // Удаляем узел: он уходит в added.
@@ -752,10 +737,7 @@ mod tests {
             openraft::testing::log_id::<TypeConfig>(1, 1, 3),
             EntryPayload::Normal(remove),
         );
-        assert_eq!(
-            sm.apply(vec![e3]).await.unwrap()[0].value.as_deref(),
-            Some("Ok")
-        );
+        assert_eq!(sm.apply(vec![e3]).await.unwrap()[0], Response::ok());
         {
             let guard = store.state_machine.read().await;
             assert!(!guard.dag.contains_node(&node_hash));
@@ -795,7 +777,7 @@ mod tests {
 
         let res = sm.apply(vec![entry]).await.unwrap();
         assert!(
-            res[0].value.as_deref().unwrap().starts_with("Error"),
+            res[0].rejection().is_some(),
             "родитель отсутствует — применение должно быть отклонено"
         );
         assert!(

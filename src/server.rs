@@ -212,6 +212,19 @@ async fn add_tx(
             (StatusCode::OK, Json(ApiResponse::Success(response)))
         }
         Err(e) => {
+            // Лидер мог отклонить транзакцию прикладной проверкой (400): сохраняем
+            // клиентский статус, не маскируя его транспортной 500-й ошибкой.
+            if let crate::web::ApiRouterError::Http { status, .. } = &e
+                && status.is_client_error()
+            {
+                return (
+                    *status,
+                    Json(ApiResponse::Error {
+                        status: "error".to_string(),
+                        message: e.to_string(),
+                    }),
+                );
+            }
             error!("Failed to forward request to leader: {:?}", e);
             (
                 StatusCode::INTERNAL_SERVER_ERROR,
@@ -261,7 +274,21 @@ async fn add_handler(
     };
 
     match app.raft.client_write(request).await {
-        Ok(_response) => {
+        Ok(response) => {
+            // Прикладной отказ state machine (уникальность узла/родителя) не
+            // является ошибкой Raft: он приходит в `response.data.value`.
+            // Его обязательно доводим до клиента (K1/C34).
+            if let Err(reason) = response.data.as_result() {
+                app.metrics.record_tx("add", false);
+                audit::add(AuditSource::Api, app.id, &payload.hash, false, Some(reason));
+                return (
+                    StatusCode::BAD_REQUEST,
+                    Json(ApiResponse::Error {
+                        status: "error".to_string(),
+                        message: reason.to_string(),
+                    }),
+                );
+            }
             app.metrics.record_tx("add", true);
             audit::add(AuditSource::Api, app.id, &payload.hash, true, None);
             (
@@ -612,7 +639,13 @@ pub async fn load_genesis(
     // Обрабатываем каждую транзакцию
     let mut errors = Vec::new();
     for tx in &transactions {
-        let func = match tx.data.func.parse::<Func>() {
+        // K2: сверяем объявленный хэш с каноническим и проверяем структуру
+        // (`func`/`var`) до записи в Raft. Неканонический генезис не принимаем.
+        let func = match tx_logic::validate_genesis(
+            &tx.data.tx,
+            &tx.data.func,
+            &Hash::from(tx.hash.as_str()),
+        ) {
             Ok(func) => func,
             Err(e) => {
                 errors.push(format!("Transaction {}: {}", tx.hash, e));
@@ -628,7 +661,24 @@ pub async fn load_genesis(
         };
 
         match app.raft.client_write(request).await {
-            Ok(_) => {
+            Ok(response) => {
+                // Прикладной отказ state machine тоже считаем ошибкой загрузки.
+                if let Err(reason) = response.data.as_result() {
+                    app.metrics.record_tx("add", false);
+                    audit::add(
+                        AuditSource::Genesis,
+                        app.id,
+                        &Hash::from(tx.hash.as_str()),
+                        false,
+                        Some(reason),
+                    );
+                    error!(
+                        "Genesis transaction {} rejected by state machine: {}",
+                        tx.hash, reason
+                    );
+                    errors.push(format!("Failed to add transaction {}: {}", tx.hash, reason));
+                    continue;
+                }
                 app.metrics.record_tx("add", true);
                 audit::add(
                     AuditSource::Genesis,

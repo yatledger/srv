@@ -272,3 +272,45 @@ async fn public_add_rejects_unsigned_transaction() {
 
     node.shutdown().await;
 }
+
+/// K1/C34 (DoD): запись с валидной подписью, но отсутствующим родителем
+/// отвергается через публичный путь с 4xx, а не сообщается как успех.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn public_add_rejects_missing_parent_with_4xx() {
+    use base58::ToBase58;
+    use dagdb::Tx;
+    use dagdb::domain::{Address, Hash};
+    use dagdb::graph::dag::TRANSFER_TOKEN;
+    use dagdb::utils::ordered_sum;
+    use ed25519_dalek::Signer;
+
+    let Some(node) = setup().await else { return };
+    let client = client();
+
+    // Корректно подписанная транзакция с двумя несуществующими родителями.
+    let sk = ed25519_dalek::SigningKey::from_bytes(&[42u8; 32]);
+    let addr = sk.verifying_key().to_bytes().to_base58();
+    let tx = Tx::new(
+        vec![Hash::from("ghost-1"), Hash::from("ghost-2")],
+        Address::from(addr.as_str()),
+        0,
+        serde_json::json!({ "ca": "0", "to": "T", "val": 1, "msg": "m" }),
+    );
+    let hash = ordered_sum(&tx, TRANSFER_TOKEN).unwrap();
+    let sign = hex::encode(sk.sign(hash.as_bytes()).to_bytes());
+    let body = serde_json::json!({ "tx": tx, "sign": sign, "func": TRANSFER_TOKEN });
+
+    let resp = client
+        .post(format!("{}/", node.base))
+        .json(&body)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        resp.status(),
+        reqwest::StatusCode::BAD_REQUEST,
+        "отсутствующий родитель должен давать 4xx"
+    );
+
+    node.shutdown().await;
+}

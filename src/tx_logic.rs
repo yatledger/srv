@@ -111,6 +111,32 @@ pub fn hash_to_hex(hash: &Blake3Hash) -> Hash {
     Hash::from(hash.to_hex().to_string())
 }
 
+/// Проверяет генезис-запись перед загрузкой (K2).
+///
+/// Сверяет объявленный `hash` с каноническим `ordered_sum(tx, func)` и проверяет
+/// структуру `var` для известных функций. Подпись и список родителей **не**
+/// проверяются: генезис-узлы — bootstrap-овые (пустые `addr`/`sign`), а
+/// существование родителей обеспечивает детерминированная валидация state
+/// machine при применении.
+pub fn validate_genesis(tx: &Tx, func: &str, declared_hash: &Hash) -> Result<Func, PrepareError> {
+    let func = parse_func(func)?;
+
+    if func == Func::TransferToken {
+        extract_from_var_struct(tx)
+            .and_then(|var| var.validate())
+            .map_err(PrepareError::Invalid)?;
+    }
+
+    let computed = hash_to_hex(&tx_hash(tx, func.as_str())?);
+    if computed != *declared_hash {
+        return Err(PrepareError::Invalid(format!(
+            "genesis hash mismatch: declared {declared_hash}, computed {computed}"
+        )));
+    }
+
+    Ok(func)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -190,6 +216,44 @@ mod tests {
     }
 
     #[test]
+    fn validate_genesis_accepts_canonical_hash_and_genesis_parents() {
+        // Генезис-узел: пустой addr/sign, без родителей.
+        let tx = Tx {
+            prnts: vec![],
+            addr: Address::from(""),
+            seq: 0,
+            var: json!({ "ca": "0", "to": "T", "val": 1, "msg": "genesis" }),
+        };
+        let hash = hash_to_hex(&tx_hash(&tx, "transferToken").unwrap());
+        assert!(validate_genesis(&tx, "transferToken", &hash).is_ok());
+    }
+
+    #[test]
+    fn validate_genesis_rejects_non_canonical_hash() {
+        let tx = Tx {
+            prnts: vec![],
+            addr: Address::from(""),
+            seq: 0,
+            var: json!({ "ca": "0", "to": "T", "val": 1, "msg": "genesis" }),
+        };
+        let wrong = Hash::from("deadbeef");
+        let err = validate_genesis(&tx, "transferToken", &wrong).unwrap_err();
+        assert!(matches!(err, PrepareError::Invalid(_)));
+    }
+
+    #[test]
+    fn validate_genesis_rejects_invalid_var() {
+        let tx = Tx {
+            prnts: vec![],
+            addr: Address::from(""),
+            seq: 0,
+            var: json!({ "totally": "wrong" }),
+        };
+        let hash = Hash::from("whatever");
+        assert!(validate_genesis(&tx, "transferToken", &hash).is_err());
+    }
+
+    #[test]
     fn prepare_error_status_mapping() {
         assert!(prepare_error_response_status(PrepareError::Invalid("x".into())) == 400);
         assert!(prepare_error_response_status(PrepareError::Conflict("x".into())) == 400);
@@ -204,5 +268,30 @@ mod tests {
             PrepareError::Internal(_) => StatusCode::INTERNAL_SERVER_ERROR,
         };
         status.as_u16()
+    }
+
+    #[test]
+    fn shipped_genesis_has_canonical_hashes() {
+        // K2/S15: хэши в genesis.json обязаны совпадать с каноническим хэшем
+        // содержимого, иначе `load-genesis` их отклонит.
+        #[derive(serde::Deserialize)]
+        struct GenesisEntry {
+            hash: String,
+            data: TxRead,
+        }
+
+        let raw = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/genesis.json"))
+            .expect("genesis.json читается");
+        let entries: Vec<GenesisEntry> = serde_json::from_str(&raw).expect("genesis.json валиден");
+
+        assert!(!entries.is_empty(), "genesis.json не должен быть пустым");
+        for entry in entries {
+            validate_genesis(
+                &entry.data.tx,
+                &entry.data.func,
+                &Hash::from(entry.hash.as_str()),
+            )
+            .unwrap_or_else(|e| panic!("неканонический genesis {}: {}", entry.hash, e));
+        }
     }
 }
