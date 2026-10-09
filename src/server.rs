@@ -225,16 +225,6 @@ async fn add_handler(
 async fn pool_handler(State(app): State<App>) -> (StatusCode, Json<PoolResponse>) {
     let state_machine = app.state_machine.state_machine.read().await;
 
-    /*
-    // Получаем все узлы с их глубинами, уже отсортированные по глубине
-    let nodes_with_time = state_machine.dag.get_time();
-
-    // Преобразуем в Vec<String> для ответа (узлы уже отсортированы по глубине)
-    let mut nodes: Vec<String> = nodes_with_time
-        .into_iter()
-        .map(|node_time| String::from(&*node_time.node))
-        .collect();
-    */
     // Получаем список смежности родителей через метод get_parents
     let parents_map = state_machine.dag.get_parents();
     // Собираем узлы и подсчитываем количество активных родителей для каждого

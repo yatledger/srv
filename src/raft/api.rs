@@ -15,17 +15,6 @@ use crate::raft;
 use raft::typ::*;
 use tracing::error;
 
-/*
-async fn add_learner_minimal(
-    State(app): State<App>,
-    Json((node_id, addr)): Json<(NodeId, String)>,
-) -> Result<Json<Value>, StatusCode> {
-    let node = BasicNode { addr };
-    let res = app.raft.add_learner(node_id, node, true).await.decompose()
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-    Ok(Json(serde_json::to_value(res).unwrap()))
-}
-*/
 pub async fn add_learner(
     State(app): State<App>,
     Json(req): Json<(NodeId, String)>,
