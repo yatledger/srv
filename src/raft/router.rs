@@ -70,10 +70,7 @@ impl Router {
         }
 
         serde_json::from_str::<Resp>(&body).map_err(|e| {
-            error!(
-                "Failed to parse response from {}: {}. Data: {}",
-                url, e, body
-            );
+            error!("Failed to parse response from {}: {}", url, e);
             Unreachable::new(&e)
         })
     }

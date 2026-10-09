@@ -1,4 +1,4 @@
-use tracing::info;
+use tracing::{error, info};
 use tracing_subscriber::fmt::time::ChronoLocal;
 
 use dagdb::config::AppConfig;
@@ -20,14 +20,23 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let cfg = AppConfig::load();
     let (_raft, app) = start_raft(&cfg).await?;
 
-    let processor_app = app.clone();
-
-    tokio::spawn(async move {
-        processor::start_processor(processor_app).await;
+    // Фоновый процессор очистки. Его падение не должно оставаться незамеченным:
+    // держим JoinHandle и завершаем узел, если задача неожиданно остановилась.
+    let processor_handle = tokio::spawn({
+        let processor_app = app.clone();
+        async move { processor::start_processor(processor_app).await }
     });
 
-    // Запускаем сервер
-    server::start_server(app, cfg.bind_addr()).await?;
+    // Запускаем сервер; он работает, пока не остановится сам или не упадёт процессор.
+    tokio::select! {
+        result = server::start_server(app, cfg.bind_addr()) => {
+            result?;
+        }
+        result = processor_handle => {
+            error!("Processor task terminated unexpectedly: {:?}", result);
+            return Err("processor task terminated unexpectedly".into());
+        }
+    }
 
     info!("Server shutdown");
     Ok(())

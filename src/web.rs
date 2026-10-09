@@ -97,11 +97,9 @@ impl HttpClient {
         url: &str,
         req: &Req,
     ) -> Result<(StatusCode, String), ApiRouterError> {
-        if let Ok(body) = serde_json::to_string(req) {
-            debug!(">>> internal request to {}: {}", url, body);
-        } else {
-            debug!(">>> internal request to {}", url);
-        }
+        // Полное тело запроса на уровне debug не логируем: это утечка
+        // чувствительных данных и лишний объём. Достаточно адресата.
+        debug!(">>> internal request to {}", url);
 
         let response = self
             .client
@@ -113,7 +111,13 @@ impl HttpClient {
 
         let status = response.status();
         let text = response.text().await.map_err(ApiRouterError::Network)?;
-        debug!("<<< internal reply from {}: {}", url, text);
+        // Тело ответа тоже не пишем целиком — только статус и размер.
+        debug!(
+            "<<< internal reply from {}: status={}, {} bytes",
+            url,
+            status,
+            text.len()
+        );
         Ok((status, text))
     }
 }
