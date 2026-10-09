@@ -1,6 +1,6 @@
 # N01. Нагрузочный генератор (loadgen)
 
-> Группа: **edits/feature/load-generator** · Тип: **feature** · Статус: 🟡 **ТЗ/план согласуются**.
+> Группа: **edits/feature/load-generator** · Тип: **feature** · Статус: ✅ **реализовано** (2026-10-09).
 > Сопутствующие документы: [`plan.md`](plan.md), [`tracker.md`](tracker.md), [`report.md`](report.md).
 > Регламент: [`AGENTS.md`](../../../../AGENTS.md) · карта документации: [`docs/README.md`](../../../README.md)
 > · формат фич: [`../README.md`](../README.md).
