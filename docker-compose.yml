@@ -1,6 +1,6 @@
-# Локальный кластер dagdb из 3 узлов + Redis.
+# Локальный кластер dagdb из 4 узлов + Redis.
 # Запуск: docker compose up --build
-# Порт каждого узла: node1=21001, node2=21002, node3=21003.
+# Порт каждого узла: node1=21001, node2=21002, node3=21003, node4=21004.
 
 services:
   redis:
@@ -66,7 +66,27 @@ services:
     depends_on:
       - redis
 
+  node4:
+    build: .
+    environment:
+      NODE_ID: "4"
+      ADVERTISE_ADDR: "node4:21004"
+      BIND_ADDR: "0.0.0.0:21004"
+      HTTP_PORT: "21004"
+      DATA_DIR: "/data"
+      REDIS_URL: "redis://:CHANGE_ME@redis:6379/0"
+      INTERNAL_API_TOKEN: "CHANGE_ME_LONG_RANDOM_TOKEN"
+      RUST_LOG: "info"
+    command: ["--id", "4", "--addr", "node4", "--port", "21004"]
+    volumes:
+      - node4-data:/data
+    ports:
+      - "21004:21004"
+    depends_on:
+      - redis
+
 volumes:
   node1-data:
   node2-data:
   node3-data:
+  node4-data:

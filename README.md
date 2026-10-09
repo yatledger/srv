@@ -1,0 +1,219 @@
+# dagdb
+
+Распределённый узел хранения DAG-графа транзакций поверх консенсуса Raft.
+
+Каждая транзакция — узел графа, ссылающийся на родителей (хэши других транзакций).
+Узлы реплицируются через Raft; «утяжелённые» узлы архивируются в Redis и удаляются из
+оперативного DAG. Транзакция подписывается ключом ed25519, а её хэш покрывает всё
+содержимое, включая `func`.
+
+> Статус: ранний MVP / экспериментальный прототип. Внутренний проект.
+
+## Стек
+
+- **Rust** (edition 2024)
+- **openraft 0.10** — консенсус Raft (git databendlabs)
+- **axum 0.7** + **tokio** — HTTP-сервер и асинхронный runtime
+- **redb** — персистентное хранение Raft-лога и state machine (чистый Rust)
+- **redis 0.32** — архив подтверждённых (удалённых из DAG) узлов
+- **blake3 / ed25519-dalek / base58** — хэширование и подписи
+- **serde / serde_json**, **rayon**, **clap**, **dotenvy**, **tracing**
+
+## Архитектура
+
+```
+src/
+├── main.rs          точка входа: логи, конфиг, запуск Raft/HTTP, фоновой очистки
+├── config.rs        AppConfig: чтение CLI + env (dotenvy), таймауты, секреты
+├── lib.rs           TypeConfig, тип Tx, start_raft (сборка узла)
+├── server.rs        HTTP-хендлеры; разделение публичного и внутреннего API
+├── auth.rs          middleware проверки кластерного токена (x-internal-token)
+├── web.rs           внутренний HTTP-клиент (пересылка на лидера, с токеном)
+├── processor.rs     фоновая очистка «тяжёлых» узлов (followers → лидеру)
+├── graph/
+│   ├── dag.rs       DAG: узлы, родители/дети, реестр added, TxVar и валидация
+│   └── weights.rs   глубины и веса узлов (BFS, rayon)
+└── raft/
+    ├── command.rs   команды Request::{Add, Remove} и Response
+    ├── log.rs       PersistentLogStore (redb) + in-memory LogStore (тесты)
+    ├── store.rs     state machine: детерминированная валидация, персистентность
+    ├── db.rs        обёртка над redb (таблицы meta/logs)
+    ├── network.rs   сетевой слой Raft (append/vote/snapshot)
+    ├── router.rs    HTTP-транспорт для Raft RPC
+    └── api.rs       хендлеры /raft/* и /mng/*
+```
+
+**Поток записи.** Клиент шлёт подписанную транзакцию на `POST /`. Узел проверяет
+родителей, `func`, структуру `var`, вычисляет канонический хэш, проверяет подпись и
+пересылает запрос лидеру (если сам не лидер). Лидер пишет команду в Raft; state machine
+детерминированно валидирует её на каждой реплике и применяет к DAG.
+
+### Инварианты
+
+- Детерминированный state machine: одинаковая команда → одинаковое состояние.
+- `func` входит в подписываемый и хэшируемый контент.
+- Хэш узла уникален; повторная вставка запрещена.
+- Удалённые узлы попадают в реестр `added` и переживают снапшот/рестарт.
+- Публичный API отделён от внутреннего (Raft/mng).
+
+## Сборка
+
+```bash
+cargo build --release
+# либо
+./build.sh
+```
+
+Бинарник: `target/release/dagdb`.
+
+## Конфигурация
+
+Скопируйте шаблон и заполните значения (файл `.env` в `.gitignore`):
+
+```bash
+cp .env.example .env
+```
+
+Приоритет: аргумент CLI → переменная окружения → значение по умолчанию.
+Секреты (`REDIS_URL`, `INTERNAL_API_TOKEN`) обязательны и задаются только из окружения.
+
+| Переменная | CLI | По умолчанию | Назначение |
+|---|---|---|---|
+| `NODE_ID` | `--id` | `1` | Уникальный ID узла в кластере |
+| `ADVERTISE_ADDR` | `--advertise-addr` | — | Адрес узла, публикуемый кластеру (`host:port`) |
+| `BIND_ADDR` | `--bind-addr` | `0.0.0.0:<HTTP_PORT>` | Адрес прослушивания HTTP |
+| `HTTP_PORT` | `--port` | `21001` | Порт HTTP (если не задан `BIND_ADDR`) |
+| `DATA_DIR` | `--data-dir` | `./data` | Каталог персистентных данных |
+| `REDIS_URL` | `--redis-url` | — (обязательно) | Строка подключения к Redis |
+| `INTERNAL_API_TOKEN` | `--internal-api-token` | — (обязательно) | Кластерный токен внутреннего API |
+| `CLUSTER_NODES` | `--cluster-nodes` | — | Список узлов `id=addr,...` (для запуска) |
+| `RUST_LOG` | — | `info` | Уровень логов |
+| `HTTP_TIMEOUT_SECS` | — | `10` | Таймаут HTTP-запросов приложения |
+| `HTTP_CONNECT_TIMEOUT_SECS` | — | `3` | Таймаут установки HTTP-соединения |
+| `RAFT_HTTP_TIMEOUT_SECS` | — | `30` | Таймаут Raft HTTP-запросов |
+| `RAFT_CONNECT_TIMEOUT_SECS` | — | `10` | Таймаут установки Raft HTTP-соединения |
+
+В `DATA_DIR` создаются `raft-log.redb` (Raft-лог, vote, committed) и
+`state-machine.redb` (DAG, `added`, membership, снапшот).
+
+## Запуск кластера (4 узла + Redis)
+
+### Через Docker Compose (рекомендуется)
+
+```bash
+docker compose up --build
+```
+
+Поднимаются Redis и 4 узла (`node1..node4`, порты `21001..21004`).
+
+### Локально
+
+1. Запустите Redis:
+
+   ```bash
+   docker run -d --name dagdb-redis -p 6379:6379 redis:7-alpine
+   ```
+
+2. Запустите 4 узла (каждый — в своём терминале) с разными `NODE_ID`/портами:
+
+   ```bash
+   NODE_ID=1 HTTP_PORT=21001 DATA_DIR=./data/node1 ./target/release/dagdb
+   NODE_ID=2 HTTP_PORT=21002 DATA_DIR=./data/node2 ./target/release/dagdb
+   NODE_ID=3 HTTP_PORT=21003 DATA_DIR=./data/node3 ./target/release/dagdb
+   NODE_ID=4 HTTP_PORT=21004 DATA_DIR=./data/node4 ./target/release/dagdb
+   ```
+
+   (Строка `REDIS_URL` и `INTERNAL_API_TOKEN` берутся из `.env`.)
+
+3. Инициализируйте кластер и загрузите генезис (см. примеры ниже). Готовый сценарий —
+   [`test.sh`](test.sh): поднимает 4 узла, инициализирует кластер, грузит `genesis.json`
+   и делает проверки.
+
+## API
+
+### Публичный (без токена)
+
+| Метод | Путь | Описание |
+|---|---|---|
+| `POST` | `/` | Принять подписанную транзакцию |
+| `GET` | `/pool` | Список узлов-кандидатов для обработки |
+| `GET` | `/full` | Полный граф с глубинами узлов |
+
+### Внутренний (требует заголовок `x-internal-token`)
+
+| Метод | Путь | Описание |
+|---|---|---|
+| `POST` | `/add` | Запись транзакции (внутрикластерная пересылка) |
+| `POST` | `/remove_heavy_nodes` | Архивировать и удалить «тяжёлые» узлы |
+| `POST` | `/load-genesis` | Загрузить `genesis.json` |
+| `POST` | `/raft/vote`, `/raft/append`, `/raft/snapshot` | Raft RPC |
+| `POST` | `/mng/init` | Инициализация кластера |
+| `POST` | `/mng/add-learner` | Добавить learner-узел |
+| `POST` | `/mng/change-membership` | Изменить состав кластера |
+| `POST` | `/mng/metrics` | Метрики Raft |
+
+### Примеры
+
+Инициализация кластера из 4 узлов:
+
+```bash
+curl -X POST -H "Content-Type: application/json" \
+  -H "x-internal-token: $INTERNAL_API_TOKEN" \
+  -d '[[1,"127.0.0.1:21001"],[2,"127.0.0.1:21002"],[3,"127.0.0.1:21003"],[4,"127.0.0.1:21004"]]' \
+  http://127.0.0.1:21001/mng/init
+```
+
+Загрузка генезиса:
+
+```bash
+curl -X POST -H "Content-Type: application/json" \
+  -H "x-internal-token: $INTERNAL_API_TOKEN" -d '[]' \
+  http://127.0.0.1:21001/load-genesis
+```
+
+Публичный граф:
+
+```bash
+curl http://127.0.0.1:21001/full
+```
+
+Транзакция (`POST /`) имеет вид:
+
+```json
+{
+  "tx": {
+    "prnts": ["<hash-родителя-1>", "<hash-родителя-2>"],
+    "addr": "<ed25519 pubkey в base58>",
+    "seq": 0,
+    "var": { "ca": "0", "to": "<base58>", "val": 100, "msg": "optional" }
+  },
+  "sign": "<ed25519-подпись в hex, 64 байта>",
+  "func": "transferToken"
+}
+```
+
+Хэш — `blake3` от канонической JSON-сериализации `tx` вместе с `func`
+(ключи рекурсивно отсортированы). Подпись — ed25519 над байтами хэша.
+Внутренние вызовы (`/add`) не требуют публичной подписи повторно: узел проверяет
+переданный `hash` на совпадение с вычисленным.
+
+## Тесты и качество
+
+```bash
+cargo fmt --all -- --check
+cargo clippy --all-targets
+cargo test --all
+```
+
+CI (`.github/workflows/ci.yml`) выполняет fmt + clippy `-D warnings` + build + test.
+
+## Известные ограничения
+
+- Обработку «тяжёлых» узлов инициируют только followers; в одноузловом кластере
+  очистка не запускается.
+- Внутрикластерный трафик идёт без TLS; защита — общий кластерный токен.
+- Публичная регистрация узлов/membership не предусмотрена: управление только
+  внутренним API с токеном.
+
+Полный перечень находок и план работ — в [`docs/AUDIT.md`](docs/AUDIT.md) и
+[`docs/tz/README.md`](docs/tz/README.md).
