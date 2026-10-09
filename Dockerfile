@@ -16,5 +16,5 @@ WORKDIR /app
 COPY --from=builder /app/target/release/dagdb /usr/local/bin/dagdb
 # genesis.json читается из рабочей директории
 COPY genesis.json ./genesis.json
-EXPOSE 21001
+EXPOSE 21001 21002 21003 21004
 ENTRYPOINT ["dagdb"]

@@ -85,6 +85,36 @@ services:
     depends_on:
       - redis
 
+  # Одноразовый bootstrap: инициализирует кластер из 4 узлов и грузит генезис.
+  init:
+    image: curlimages/curl:8.10.1
+    depends_on:
+      - node1
+      - node2
+      - node3
+      - node4
+    environment:
+      INTERNAL_API_TOKEN: "CHANGE_ME_LONG_RANDOM_TOKEN"
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        set -e
+        echo "waiting for node1...";
+        until curl -sf http://node1:21001/pool >/dev/null; do sleep 1; done
+        echo "initializing cluster...";
+        curl -sf -X POST -H "Content-Type: application/json" \
+          -H "x-internal-token: $${INTERNAL_API_TOKEN}" \
+          -d '[[1,"node1:21001"],[2,"node2:21002"],[3,"node3:21003"],[4,"node4:21004"]]' \
+          http://node1:21001/mng/init || true
+        echo "waiting for leader...";
+        until curl -s -X POST -H "x-internal-token: $${INTERNAL_API_TOKEN}" \
+          http://node1:21001/mng/metrics | grep -q '"current_leader":[0-9]'; do sleep 1; done
+        echo "loading genesis...";
+        curl -sf -X POST -H "Content-Type: application/json" \
+          -H "x-internal-token: $${INTERNAL_API_TOKEN}" -d '[]' \
+          http://node1:21001/load-genesis
+        echo "cluster ready."
+
 volumes:
   node1-data:
   node2-data:
