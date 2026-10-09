@@ -84,7 +84,6 @@ pub async fn init(
 
 pub async fn metrics(State(app): State<App>) -> Result<Json<impl serde::Serialize>, StatusCode> {
     let metrics = app.raft.metrics().borrow().clone();
-    // let res: Result<RaftMetrics<TypeConfig>, Infallible> = Ok(metrics);
     Ok(Json(metrics))
 }
 
