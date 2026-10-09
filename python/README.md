@@ -1,8 +1,7 @@
-# python/ — Python-нагрузчик `dagdb` (N02)
+# python/ — Python-нагрузчик `dagdb`
 
 Внешний HTTP-клиент к **уже запущенному** кластеру `dagdb` (локальному или
-удалённому). Кластер не поднимает — этим занимается Rust-инструмент
-[`N01`](../docs/edits/feature/load-generator/) (`loadgen`, in-process). Python-версия
+удалённому). Кластер не поднимает — этим занимается Rust-инструмент (../docs/edits/feature/load-generator/) (`loadgen`, in-process). Python-версия
 дополняет его и строит нагрузку по тем же правилам, что state machine:
 канонический хэш/подпись (порт `src/utils.rs`), строго монотонный `seq` по адресу,
 2..100 **живых** родителей из `/pool`.
