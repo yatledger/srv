@@ -28,3 +28,5 @@ __pycache__/
 python/.pytest_cache/
 .pytest_cache/
 python/*.json
+
+.semantic-search
